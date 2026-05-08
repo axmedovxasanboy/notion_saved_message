@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 import uuid
 from typing import List, Optional
 from enum import Enum
@@ -11,7 +11,7 @@ class NotionLogs(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     function_name: str = Field(default=None, nullable=False)
     error: str = Field(default=None, nullable=False)
-    occurred_at: datetime.datetime = Field(default_factory=datetime.datetime.now, nullable=False)
+    occurred_at: datetime = Field(default_factory=datetime.now, nullable=False)
 
 class NotionPageCreator:
     # wrap following field to "parent" json object
