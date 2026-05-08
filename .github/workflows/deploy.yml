@@ -1,0 +1,48 @@
+name: Deploy to Oracle Cloud
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: true  # fail fast on any error
+          script: |
+            set -euo pipefail
+            cd /home/ubuntu/notion_saved_message
+
+            echo "==> Pulling latest code"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Activating virtualenv"
+            source venv/bin/activate
+
+            echo "==> Installing dependencies (only if requirements.txt changed)"
+            if ! git diff --quiet HEAD@{1} HEAD -- requirements.txt 2>/dev/null; then
+              pip install -r requirements.txt --quiet
+            else
+              echo "    requirements.txt unchanged, skipping pip install"
+            fi
+
+            echo "==> Restarting bot"
+            sudo /bin/systemctl restart telegram-bot
+
+            echo "==> Verifying"
+            sleep 2
+            sudo /bin/systemctl is-active telegram-bot
+            sudo /bin/systemctl status telegram-bot --no-pager --lines=10
