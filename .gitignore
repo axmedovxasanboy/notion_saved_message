@@ -1,0 +1,28 @@
+# Environment variables — never commit real secrets
+.env
+.env.local
+.env.*.local
+
+# SQLite database
+data/
+*.db
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# JetBrains IDE
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json
+
