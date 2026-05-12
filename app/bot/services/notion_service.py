@@ -28,16 +28,13 @@ async def handle_main_workspace(message: Message, bot: Bot):
             user = user_service.save_or_update_user(user_msg=message)
 
         page = await notion_service.get_page_contents()
-        admin_msg = (f"Main page: 📃<b>{page.title}</b>\n"
-                     f"It contains {len(page.paragraphs)} paragraphs and {len(page.page)} pages\n")
-
-        full_text = notion_service.get_notion_page_content_fully(page)
+        header = f"🖥 You're now in the Notion workspace — <b>{page.title}</b>\n\nTap a page to open it:"
         callback_queries = keyboards.get_page_callback_queries(page.page)
         notion_workspace_buttons = keyboards.get_notion_workspace_page_buttons()
         user.step = bot_models.BotSteps.WORKSPACE
 
-        await bot.send_message(chat_id, admin_msg + full_text, reply_markup=callback_queries)
-        await bot.send_message(chat_id, "Or for more detailed information click buttons below 👇", reply_markup=notion_workspace_buttons)
+        await bot.send_message(chat_id, header, reply_markup=callback_queries)
+        await bot.send_message(chat_id, "Or use the menu below 👇", reply_markup=notion_workspace_buttons)
         user_service.save_or_update_user(user=user)
 
     except NotionPageIdNotSpecified as notion_page_id_not_specified:
@@ -95,13 +92,10 @@ async def page_back_to_main(query: CallbackQuery, bot: Bot) -> None:
     user_service.save_or_update_user(user=user)
 
     page = await notion_service.get_page_contents()
-    admin_msg = (f"Main page: 📃<b>{page.title}</b>\n"
-                 f"It contains {len(page.paragraphs)} paragraphs and {len(page.page)} pages\n")
-
-    full_text = notion_service.get_notion_page_content_fully(page)
+    header = f"🖥 You're now in the Notion workspace — <b>{page.title}</b>\n\nTap a page to open it:"
     callback_queries = keyboards.get_page_callback_queries(page.page)
 
-    await bot.edit_message_text(text=admin_msg + full_text, message_id=query.message.message_id, chat_id=chat_id, reply_markup=callback_queries)
+    await bot.edit_message_text(text=header, message_id=query.message.message_id, chat_id=chat_id, reply_markup=callback_queries)
 
 async def back(message: Message, bot: Bot) -> None:
     chat_id = str(message.chat.id)

@@ -289,13 +289,32 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
     if post is None:
         await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
         return
-    await bot.edit_message_text(
-        text=_format_post_detail(post),
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
-        reply_markup=keyboards.get_post_detail_keyboard(post),
-        disable_web_page_preview=True,
-    )
+
+    try:
+        await bot.edit_message_text(
+            text=_format_post_detail(post, full=True),
+            chat_id=query.message.chat.id,
+            message_id=query.message.message_id,
+            reply_markup=keyboards.get_post_detail_keyboard(post),
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "too long" in err or "message_too_long" in err or "message is too long" in err:
+            link = notion_service.page_url(post.saved_notion_page_id)
+            link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
+            note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
+            await bot.edit_message_text(
+                text=_format_post_detail(post, full=False) + note,
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                reply_markup=keyboards.get_post_detail_keyboard(post),
+                disable_web_page_preview=True,
+            )
+        else:
+            await bot.answer_callback_query(query.id, text=f"Error: {exc}", show_alert=True)
+            return
+
     await bot.answer_callback_query(query.id)
 
 
@@ -514,15 +533,15 @@ def _format_channel_detail(channel: Channel) -> str:
     return "\n".join(parts)
 
 
-def _format_post_detail(post: UserPosts) -> str:
+def _format_post_detail(post: UserPosts, full: bool = True) -> str:
     title = post.saved_title or post.custom_title or post.gpt_title or post.claude_title or "(untitled)"
     link = notion_service.page_url(post.saved_notion_page_id)
     parts = [f"<b>{title}</b>"]
     if link:
         parts.append(f'<a href="{link}">Open in Notion</a>')
     snippet = (post.post or "").strip()
-    if len(snippet) > 300:
-        snippet = snippet[:300] + "…"
+    if not full and len(snippet) > 500:
+        snippet = snippet[:500] + "…"
     if snippet:
         parts.append("")
         parts.append(snippet)

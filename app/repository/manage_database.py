@@ -130,10 +130,10 @@ class DatabaseManager:
 
     def save_or_update_post(self, user_post: UserPosts) -> UserPosts:
         with Session(self._engine) as session:
-            session.add(user_post)
+            merged = session.merge(user_post)
             session.commit()
-            session.refresh(user_post)
-            return user_post
+            session.refresh(merged)
+            return merged
 
     def get_post_by_id(self, post_id: int) -> "UserPosts | None":
         with Session(self._engine) as session:

@@ -216,6 +216,8 @@ async def _ingest_post_row(
         existing.original_post_date = posted_at; changed = True
     if channel is not None and existing.channel_id != channel.id:
         existing.channel_id = channel.id; changed = True
+    if channel is not None and existing.source_channel_name != channel.name:
+        existing.source_channel_name = channel.name; changed = True
     if channel is None and source and existing.source_user_name != source:
         existing.source_user_name = source; changed = True
     if changed:
