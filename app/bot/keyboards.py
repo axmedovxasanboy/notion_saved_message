@@ -102,7 +102,7 @@ def get_channels_list_keyboard(channels: List[Channel], page: int = 0) -> Inline
         suffix = f"@{channel.username}" if channel.username else channel.external_id
         builder.button(
             text=f"{base_index + offset}. {channel.name} ({suffix})",
-            callback_data=f"CH_VIEW_{channel.id}",
+            callback_data=f"CH_VIEW_{channel.id}_P{page}",
         )
 
     nav: list[tuple[str, str]] = []
@@ -123,14 +123,14 @@ def get_channels_list_keyboard(channels: List[Channel], page: int = 0) -> Inline
     return builder.as_markup()
 
 
-def get_channel_detail_keyboard(channel: Channel) -> InlineKeyboardMarkup:
+def get_channel_detail_keyboard(channel: Channel, from_page: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📝 View posts", callback_data=f"CH_POSTS_{channel.id}")
     builder.button(text="✏️ Rename", callback_data=f"CH_RENAME_{channel.id}")
     builder.button(text="🔖 Edit username", callback_data=f"CH_USERNAME_{channel.id}")
     builder.button(text="🔀 Merge into…", callback_data=f"CH_MERGE_{channel.id}")
     builder.button(text="🗑 Delete", callback_data=f"CH_DELETE_{channel.id}")
-    builder.button(text="⬅️ Back to channels", callback_data="CH_LIST")
+    builder.button(text="⬅️ Back to channels", callback_data=f"CH_LIST_PAGE_{from_page}")
     builder.adjust(2, 2, 1, 1)
     return builder.as_markup()
 

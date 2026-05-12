@@ -139,7 +139,7 @@ def _parse_list_page(data: Optional[str]) -> int:
 async def show_channel(query: CallbackQuery, bot: Bot) -> None:
     if query.message is None or not query.data:
         return
-    channel_id = _parse_int(query.data, "CH_VIEW_")
+    channel_id, from_page = _parse_channel_view(query.data)
     channel = channel_service.get_channel(channel_id) if channel_id else None
     if channel is None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
@@ -150,7 +150,7 @@ async def show_channel(query: CallbackQuery, bot: Bot) -> None:
         text=text,
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        reply_markup=keyboards.get_channel_detail_keyboard(channel),
+        reply_markup=keyboards.get_channel_detail_keyboard(channel, from_page=from_page),
         disable_web_page_preview=True,
     )
     await bot.answer_callback_query(query.id)
@@ -517,6 +517,21 @@ def _parse_int(data: str, prefix: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _parse_channel_view(data: str) -> tuple[Optional[int], int]:
+    """Parse CH_VIEW_{id} or CH_VIEW_{id}_P{page}. Returns (channel_id, page)."""
+    raw = data.replace("CH_VIEW_", "", 1)
+    if "_P" in raw:
+        id_part, page_part = raw.rsplit("_P", 1)
+        try:
+            return int(id_part), int(page_part)
+        except ValueError:
+            pass
+    try:
+        return int(raw), 0
+    except ValueError:
+        return None, 0
 
 
 def _format_channel_detail(channel: Channel) -> str:
