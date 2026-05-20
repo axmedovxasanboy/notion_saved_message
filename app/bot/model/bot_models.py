@@ -74,6 +74,10 @@ class User(SQLModel, table=True):
     auto_title_ai: str = Field(default="gpt", nullable=False)
     auto_save: bool = Field(default=False, nullable=False)
     auto_sync_interval_minutes: int = Field(default=0, nullable=False)
+    # Page index (0-based) the admin is currently viewing in the paginated channels
+    # list. Persisted so that navigating channel → posts → post → back returns to
+    # the original page instead of resetting to page 1.
+    current_channel_page: int = Field(default=0, nullable=False)
 
     posts: List["UserPosts"] = Relationship(back_populates="user")
 

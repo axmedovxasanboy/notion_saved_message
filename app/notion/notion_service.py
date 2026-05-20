@@ -46,6 +46,24 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_RICH_TEXT_LIMIT = 2000
 NOTION_BLOCKS_PER_REQUEST = 100
 
+# Shared httpx client. Reuses TCP / TLS connections across all Notion API calls
+# instead of spinning up a fresh client (and handshake) for every request.
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=30.0)
+    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+    _http_client = None
+
 # Database titles visible in Notion. Keep short — they're the headers users see.
 DB_CHANNELS_INDEX = "Channels"
 DB_POEMS = "Poems"
@@ -109,31 +127,27 @@ def _raise_with_body(response: httpx.Response) -> None:
 
 
 async def _get_json(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(url, headers=_headers())
-        _raise_with_body(response)
-        return response.json()
+    response = await _client().get(url, headers=_headers())
+    _raise_with_body(response)
+    return response.json()
 
 
 async def _post_json(url: str, payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, headers=_headers(), json=payload)
-        _raise_with_body(response)
-        return response.json()
+    response = await _client().post(url, headers=_headers(), json=payload)
+    _raise_with_body(response)
+    return response.json()
 
 
 async def _patch_json(url: str, payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.patch(url, headers=_headers(), json=payload)
-        _raise_with_body(response)
-        return response.json()
+    response = await _client().patch(url, headers=_headers(), json=payload)
+    _raise_with_body(response)
+    return response.json()
 
 
 async def _delete_json(url: str) -> dict:
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.delete(url, headers=_headers())
-        _raise_with_body(response)
-        return response.json()
+    response = await _client().delete(url, headers=_headers())
+    _raise_with_body(response)
+    return response.json()
 
 
 async def get_page_contents(notion_page_id=None, use_default=True) -> NotionPageModel:

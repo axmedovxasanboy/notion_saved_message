@@ -10,14 +10,18 @@ def save_user(user_data: User) -> User:
     with Session(services.db.get_engine()) as session:
         session.add(user_data)
         session.commit()
+        session.refresh(user_data)
+        session.expunge(user_data)
         return user_data
 
 
 def update_user(user_data: User) -> User:
     with Session(services.db.get_engine()) as session:
-        session.merge(user_data)
+        merged = session.merge(user_data)
         session.commit()
-        return user_data
+        session.refresh(merged)
+        session.expunge(merged)
+        return merged
 
 
 # def get_messages():

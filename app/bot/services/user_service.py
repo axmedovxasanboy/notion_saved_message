@@ -76,6 +76,16 @@ def set_auto_sync_interval(user: User, minutes: int) -> User:
     return bot_repository.update_user(user)
 
 
+def set_current_channel_page(user: User, page: int) -> User:
+    """Remember which page of the paginated channels list the admin is on.
+    A no-op when the value matches the existing one (avoids needless DB writes)."""
+    page = max(0, int(page))
+    if user.current_channel_page == page:
+        return user
+    user.current_channel_page = page
+    return bot_repository.update_user(user)
+
+
 def get_admin_user() -> Optional[User]:
     import os
     chat_id = os.getenv("CHAT_ID")

@@ -28,6 +28,15 @@ async def forward_message(message: Message, bot: Bot) -> None:
 
     text = message.html_text
     if not text:
+        # Forwards with only media (photo/voice/etc.) and no caption don't carry any
+        # text we can save or title. Let the admin know instead of silently dropping
+        # the message, so they can re-send with a caption.
+        await bot.send_message(
+            chat_id,
+            "Couldn't save that forward — it has no text or caption. "
+            "Please add a caption and forward again.",
+            reply_to_message_id=message.message_id,
+        )
         return
 
     forward_origin = message.forward_origin

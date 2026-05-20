@@ -118,6 +118,10 @@ async def save_to_notion(callback_query: CallbackQuery, bot: Bot, *, source: str
 
 
 def _resolve_post(callback_query: CallbackQuery, *, prefix: str):
+    # Inline-message callbacks (and some race conditions) deliver `query` without a
+    # bound message. Bail out cleanly instead of AttributeError'ing on `.chat`.
+    if callback_query.message is None:
+        return None, None, None
     chat_id = str(callback_query.message.chat.id)
     user = user_service.get_user_by_chat_id(chat_id)
     if user is None or not callback_query.data:

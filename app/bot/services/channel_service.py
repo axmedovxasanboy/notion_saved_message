@@ -3,6 +3,8 @@ import os
 import uuid
 from typing import List, Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from bot.model.bot_models import Channel, UserPosts
 from bot.services import favorites_service
 from container import services
@@ -51,7 +53,16 @@ def find_or_create_channel(name: str, username: Optional[str], telegram_chat_id:
         username=username,
         external_id=external_id,
     )
-    return services.db.save_channel(channel)
+    try:
+        return services.db.save_channel(channel)
+    except IntegrityError:
+        # Lost a race: two concurrent forwards from the same channel both reached the
+        # save. The unique constraint on external_id rejects the second insert; re-read
+        # the row the winner created so the caller still gets a real Channel back.
+        winner = services.db.get_channel_by_external_id(external_id)
+        if winner is not None:
+            return winner
+        raise
 
 
 def get_channel(channel_id: int) -> Optional[Channel]:
@@ -64,6 +75,10 @@ def list_channels() -> List[Channel]:
 
 def count_posts(channel_id: int) -> int:
     return services.db.count_posts_for_channel(channel_id)
+
+
+def count_posts_by_channels(channel_ids: list[int]) -> dict[int, int]:
+    return services.db.count_posts_by_channels(channel_ids)
 
 
 def list_posts(channel_id: int) -> List[UserPosts]:

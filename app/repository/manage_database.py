@@ -59,10 +59,29 @@ class DatabaseManager:
         self._engine = create_engine(db_url, connect_args=connect_args)
         SQLModel.metadata.create_all(self._engine)
         try:
+            self._apply_lightweight_migrations()
+        except Exception:
+            # Migrations are best-effort; if the schema isn't ready yet, skip silently.
+            pass
+        try:
             self._backfill_channels()
         except Exception:
             # Backfill is best-effort; if the schema isn't ready yet, skip silently.
             pass
+
+    def _apply_lightweight_migrations(self) -> None:
+        """Add columns that newer model versions introduced to already-existing tables.
+        SQLModel.metadata.create_all() only creates *missing* tables; it never ALTERs."""
+        from sqlalchemy import inspect, text
+        inspector = inspect(self._engine)
+        if "user" in inspector.get_table_names():
+            existing = {col["name"] for col in inspector.get_columns("user")}
+            if "current_channel_page" not in existing:
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        'ALTER TABLE "user" ADD COLUMN current_channel_page INTEGER '
+                        'NOT NULL DEFAULT 0'
+                    ))
 
     def _backfill_channels(self) -> None:
         """Group existing channel-destined posts into Channel records (idempotent)."""
@@ -194,6 +213,23 @@ class DatabaseManager:
                 select(func.count(UserPosts.id)).where(UserPosts.channel_id == channel_id)
             ).one()
             return int(result if not isinstance(result, tuple) else result[0])
+
+    def count_posts_by_channels(self, channel_ids: list[int]) -> dict[int, int]:
+        """Return {channel_id: post_count} for the given ids in ONE grouped query.
+        Missing ids are filled with 0 so callers don't need to check membership."""
+        if not channel_ids:
+            return {}
+        from sqlalchemy import func
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(UserPosts.channel_id, func.count(UserPosts.id))
+                .where(UserPosts.channel_id.in_(channel_ids))
+                .group_by(UserPosts.channel_id)
+            ).all()
+        counts: dict[int, int] = {int(cid): int(c) for cid, c in rows if cid is not None}
+        for cid in channel_ids:
+            counts.setdefault(cid, 0)
+        return counts
 
     def list_posts_for_channel(self, channel_id: int) -> list:
         with Session(self._engine) as session:

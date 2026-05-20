@@ -64,14 +64,21 @@ async def open_channels(message: Message, bot: Bot) -> None:
     user.step = BotSteps.CHANNEL
     user_service.save_or_update_user(user=user)
 
-    await _send_channels_list(bot, chat_id)
+    # Re-entering "Channels 📺" returns to the last page the admin was on. With
+    # 50+ pages of channels, resetting to page 1 forced a tedious manual scroll
+    # back to wherever they were working.
+    await _send_channels_list(bot, chat_id, page=user.current_channel_page)
 
 
 async def _send_channels_list(
     bot: Bot, chat_id: str,
     edit_message_id: Optional[int] = None,
-    page: int = 0,
+    page: Optional[int] = None,
 ) -> None:
+    user = user_service.get_user_by_chat_id(chat_id)
+    if page is None:
+        page = user.current_channel_page if user is not None else 0
+
     channels = channel_service.list_channels()
     if not channels:
         text = "<i>No channels yet. Forward a channel post to create one.</i>"
@@ -84,13 +91,20 @@ async def _send_channels_list(
     page_channels, page, total_pages = keyboards.paginate_channels(channels, page)
     base_index = page * keyboards.CHANNELS_PER_PAGE
 
+    # Persist the page that was actually rendered (it may have been clamped if
+    # channels were deleted while we were elsewhere) so subsequent navigation lands
+    # on the same spot.
+    if user is not None and user.current_channel_page != page:
+        user_service.set_current_channel_page(user, page)
+
     header = "<b>Your channels</b>"
     if total_pages > 1:
         header += f" — page {page + 1}/{total_pages}"
     lines = [header + "\n"]
+    post_counts = channel_service.count_posts_by_channels([c.id for c in page_channels])
     for offset, channel in enumerate(page_channels, start=1):
         suffix = f"@{channel.username}" if channel.username else channel.external_id
-        post_count = channel_service.count_posts(channel.id)
+        post_count = post_counts.get(channel.id, 0)
         link = notion_service.page_url(channel.notion_page_id)
         link_str = f' — <a href="{link}">notion</a>' if link else ""
         lines.append(
@@ -139,13 +153,23 @@ def _parse_list_page(data: Optional[str]) -> int:
 async def show_channel(query: CallbackQuery, bot: Bot) -> None:
     if query.message is None or not query.data:
         return
-    channel_id, from_page = _parse_channel_view(query.data)
+    channel_id, encoded_page = _parse_channel_view(query.data)
     channel = channel_service.get_channel(channel_id) if channel_id else None
     if channel is None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
         return
 
     user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    # `CH_VIEW_{id}_P{page}` arrives from the paginated list — persist the source
+    # page so deeper navigation (posts → back) restores it. `CH_VIEW_{id}` without
+    # `_P` arrives from screens that don't know the page (e.g. "back from posts"),
+    # so we fall back to the user's saved page instead of resetting to 0.
+    if encoded_page is not None and user is not None:
+        user = user_service.set_current_channel_page(user, encoded_page)
+        from_page = encoded_page
+    else:
+        from_page = user.current_channel_page if user is not None else 0
+
     is_favorite = user is not None and favorites_service.is_channel_favorite(user.id, channel.id)
 
     text = _format_channel_detail(channel, is_favorite=is_favorite)
@@ -173,12 +197,15 @@ async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
     posts = channel_service.list_posts(channel.id)
     if not posts:
         is_favorite = _channel_is_favorite(query, channel.id)
+        from_page = _saved_channel_page(query)
         text = _format_channel_detail(channel, is_favorite=is_favorite) + "\n\n<i>No posts yet.</i>"
         await bot.edit_message_text(
             text=text,
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
-            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_favorite),
+            reply_markup=keyboards.get_channel_detail_keyboard(
+                channel, from_page=from_page, is_favorite=is_favorite,
+            ),
             disable_web_page_preview=True,
         )
     else:
@@ -309,17 +336,27 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
         )
     except Exception as exc:
         err = str(exc).lower()
+        # Re-rendering the same text is a no-op for Telegram, but raises. Just ack.
+        if "message is not modified" in err or "message_not_modified" in err:
+            await bot.answer_callback_query(query.id)
+            return
         if "too long" in err or "message_too_long" in err or "message is too long" in err:
             link = notion_service.page_url(post.saved_notion_page_id)
             link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
             note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
-            await bot.edit_message_text(
-                text=_format_post_detail(post, full=False, is_favorite=is_favorite) + note,
-                chat_id=query.message.chat.id,
-                message_id=query.message.message_id,
-                reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
-                disable_web_page_preview=True,
-            )
+            try:
+                await bot.edit_message_text(
+                    text=_format_post_detail(post, full=False, is_favorite=is_favorite) + note,
+                    chat_id=query.message.chat.id,
+                    message_id=query.message.message_id,
+                    reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
+                    disable_web_page_preview=True,
+                )
+            except Exception as inner_exc:  # noqa: BLE001
+                await bot.answer_callback_query(
+                    query.id, text=f"Error: {inner_exc}", show_alert=True,
+                )
+                return
         else:
             await bot.answer_callback_query(query.id, text=f"Error: {exc}", show_alert=True)
             return
@@ -428,11 +465,14 @@ async def execute_delete_post(query: CallbackQuery, bot: Bot) -> None:
                 )
                 return
             is_favorite = _channel_is_favorite(query, channel.id)
+            from_page = _saved_channel_page(query)
             await bot.edit_message_text(
                 text=_format_channel_detail(channel, is_favorite=is_favorite) + "\n\n<i>No posts yet.</i>",
                 chat_id=query.message.chat.id,
                 message_id=query.message.message_id,
-                reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_favorite),
+                reply_markup=keyboards.get_channel_detail_keyboard(
+                    channel, from_page=from_page, is_favorite=is_favorite,
+                ),
                 disable_web_page_preview=True,
             )
             return
@@ -465,7 +505,9 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
             chat_id, f"Renamed to <b>{channel.name}</b>.",
-            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_fav),
+            reply_markup=keyboards.get_channel_detail_keyboard(
+                channel, from_page=user.current_channel_page, is_favorite=is_fav,
+            ),
         )
         return True
 
@@ -484,7 +526,9 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
             chat_id, f"Username set to {label}.",
-            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_fav),
+            reply_markup=keyboards.get_channel_detail_keyboard(
+                channel, from_page=user.current_channel_page, is_favorite=is_fav,
+            ),
         )
         return True
 
@@ -551,8 +595,21 @@ def _post_is_favorite(query: CallbackQuery, post_id: int) -> bool:
     return favorites_service.is_post_favorite(user.id, post_id)
 
 
-def _parse_channel_view(data: str) -> tuple[Optional[int], int]:
-    """Parse CH_VIEW_{id} or CH_VIEW_{id}_P{page}. Returns (channel_id, page)."""
+def _saved_channel_page(query: CallbackQuery) -> int:
+    """The page index the admin was last on in the paginated channels list.
+    Falls back to 0 if we can't resolve the user (e.g. inline-message callback)."""
+    if query.message is None:
+        return 0
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    if user is None:
+        return 0
+    return user.current_channel_page
+
+
+def _parse_channel_view(data: str) -> tuple[Optional[int], Optional[int]]:
+    """Parse CH_VIEW_{id} or CH_VIEW_{id}_P{page}. Returns (channel_id, page_or_None).
+    The second element is None when the callback didn't carry a page — the caller
+    should then fall back to the user's saved page rather than assume 0."""
     raw = data.replace("CH_VIEW_", "", 1)
     if "_P" in raw:
         id_part, page_part = raw.rsplit("_P", 1)
@@ -561,9 +618,9 @@ def _parse_channel_view(data: str) -> tuple[Optional[int], int]:
         except ValueError:
             pass
     try:
-        return int(raw), 0
+        return int(raw), None
     except ValueError:
-        return None, 0
+        return None, None
 
 
 def _format_channel_detail(channel: Channel, is_favorite: bool = False) -> str:

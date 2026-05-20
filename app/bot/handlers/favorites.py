@@ -107,11 +107,14 @@ async def open_favorite_channel(query: CallbackQuery, bot: Bot) -> None:
         return
     user = user_service.get_user_by_chat_id(str(query.message.chat.id))
     is_favorite = user is not None and favorites_service.is_channel_favorite(user.id, channel.id)
+    from_page = user.current_channel_page if user is not None else 0
     await bot.edit_message_text(
         text=_format_channel(channel, is_favorite=is_favorite),
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_favorite),
+        reply_markup=keyboards.get_channel_detail_keyboard(
+            channel, from_page=from_page, is_favorite=is_favorite,
+        ),
         disable_web_page_preview=True,
     )
     await bot.answer_callback_query(query.id)
@@ -137,17 +140,26 @@ async def open_favorite_post(query: CallbackQuery, bot: Bot) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         err = str(exc).lower()
+        if "message is not modified" in err or "message_not_modified" in err:
+            await bot.answer_callback_query(query.id)
+            return
         if "too long" in err or "message_too_long" in err or "message is too long" in err:
             link = notion_service.page_url(post.saved_notion_page_id)
             link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
             note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
-            await bot.edit_message_text(
-                text=_format_post(post, full=False, is_favorite=is_favorite) + note,
-                chat_id=query.message.chat.id,
-                message_id=query.message.message_id,
-                reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
-                disable_web_page_preview=True,
-            )
+            try:
+                await bot.edit_message_text(
+                    text=_format_post(post, full=False, is_favorite=is_favorite) + note,
+                    chat_id=query.message.chat.id,
+                    message_id=query.message.message_id,
+                    reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
+                    disable_web_page_preview=True,
+                )
+            except Exception as inner_exc:  # noqa: BLE001
+                await bot.answer_callback_query(
+                    query.id, text=f"Error: {inner_exc}", show_alert=True,
+                )
+                return
         else:
             await bot.answer_callback_query(query.id, text=f"Error: {exc}", show_alert=True)
             return
@@ -172,7 +184,9 @@ async def toggle_channel_favorite(query: CallbackQuery, bot: Bot) -> None:
         text=_format_channel(channel, is_favorite=now_favorite),
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=now_favorite),
+        reply_markup=keyboards.get_channel_detail_keyboard(
+            channel, from_page=user.current_channel_page, is_favorite=now_favorite,
+        ),
         disable_web_page_preview=True,
     )
     await bot.answer_callback_query(

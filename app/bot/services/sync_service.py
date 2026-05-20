@@ -187,6 +187,9 @@ async def _ingest_post_row(
     counts["posts_seen"] += 1
     title = _read_title(post_row, notion_service.PROP_TITLE) or ""
     posted_at = _read_date(post_row, notion_service.PROP_POSTED_AT)
+    # `Source` only exists on poem / user-quote rows; per-channel post databases don't
+    # define it (the source is implied by the parent channel). For channel rows this is
+    # therefore always None and the source-update branch below is skipped.
     source = _read_rich_text(post_row, notion_service.PROP_SOURCE)
 
     existing = services.db.get_post_by_notion_id(post_page_id)
@@ -194,7 +197,7 @@ async def _ingest_post_row(
         body = await notion_service.fetch_page_plain_text(post_page_id)
         new_post = UserPosts(
             post=body or title,
-            message_id=f"notion_{post_page_id.replace('-', '')[:12]}",
+            message_id=f"notion_{post_page_id.replace('-', '')}",
             user_id=admin_id,
             saved_title=title or None,
             saved_notion_page_id=post_page_id,
