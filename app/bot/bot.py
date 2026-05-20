@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from notion import notion_service as notion_api
 
-from .handlers import callback_query, channels, forward, settings, start
+from .handlers import callback_query, channels, favorites, forward, settings, start
 from .services import notion_service, sync_service
 
 _log = logging.getLogger(__name__)
@@ -49,6 +49,11 @@ async def sync_button(message: Message) -> None:
 @dp.message(F.text == "Settings ⚙️")
 async def settings_button(message: Message) -> None:
     await settings.open_settings(message, handler_bot)
+
+
+@dp.message(F.text == "Favorites ⭐")
+async def favorites_button(message: Message) -> None:
+    await favorites.open_favorites(message, handler_bot)
 
 
 @dp.edited_message()
@@ -204,6 +209,43 @@ async def post_delete_cbq(query: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("SET_"))
 async def settings_cbq(query: CallbackQuery) -> None:
     await settings.handle_callback(query, handler_bot)
+
+
+# ----- Favorites callbacks -----
+
+@dp.callback_query(F.data == "FAV_MENU")
+async def favorites_menu_cbq(query: CallbackQuery) -> None:
+    await favorites.show_menu(query, handler_bot)
+
+
+@dp.callback_query(F.data == "FAV_TYPE_CH")
+async def favorites_type_channels_cbq(query: CallbackQuery) -> None:
+    await favorites.show_favorite_channels(query, handler_bot)
+
+
+@dp.callback_query(F.data == "FAV_TYPE_POST")
+async def favorites_type_posts_cbq(query: CallbackQuery) -> None:
+    await favorites.show_favorite_posts(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("FAV_OPEN_CH_"))
+async def favorites_open_channel_cbq(query: CallbackQuery) -> None:
+    await favorites.open_favorite_channel(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("FAV_OPEN_POST_"))
+async def favorites_open_post_cbq(query: CallbackQuery) -> None:
+    await favorites.open_favorite_post(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("FAV_TOGGLE_CH_"))
+async def favorites_toggle_channel_cbq(query: CallbackQuery) -> None:
+    await favorites.toggle_channel_favorite(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("FAV_TOGGLE_POST_"))
+async def favorites_toggle_post_cbq(query: CallbackQuery) -> None:
+    await favorites.toggle_post_favorite(query, handler_bot)
 
 
 async def main() -> None:

@@ -2,7 +2,7 @@ from pathlib import Path
 from sqlalchemy import Engine
 from sqlalchemy.orm import selectinload
 
-from bot.model.bot_models import Channel, PostDestination, User, UserPosts
+from bot.model.bot_models import Channel, Favorite, FavoriteType, PostDestination, User, UserPosts
 from exceptions.notion_exceptions import *
 from notion.model.notion import *
 from dotenv import load_dotenv
@@ -211,6 +211,95 @@ class DatabaseManager:
                 session.add(post)
             session.commit()
             return len(posts)
+
+    # FAVORITES
+
+    def get_favorite(self, user_id: int, target_type: FavoriteType, target_id: int) -> "Favorite | None":
+        with Session(self._engine) as session:
+            return session.exec(
+                select(Favorite).where(
+                    Favorite.user_id == user_id,
+                    Favorite.target_type == target_type,
+                    Favorite.target_id == target_id,
+                )
+            ).first()
+
+    def add_favorite(self, user_id: int, target_type: FavoriteType, target_id: int) -> "Favorite":
+        existing = self.get_favorite(user_id, target_type, target_id)
+        if existing is not None:
+            return existing
+        with Session(self._engine) as session:
+            favorite = Favorite(user_id=user_id, target_type=target_type, target_id=target_id)
+            session.add(favorite)
+            session.commit()
+            session.refresh(favorite)
+            return favorite
+
+    def remove_favorite(self, user_id: int, target_type: FavoriteType, target_id: int) -> bool:
+        with Session(self._engine) as session:
+            favorite = session.exec(
+                select(Favorite).where(
+                    Favorite.user_id == user_id,
+                    Favorite.target_type == target_type,
+                    Favorite.target_id == target_id,
+                )
+            ).first()
+            if favorite is None:
+                return False
+            session.delete(favorite)
+            session.commit()
+            return True
+
+    def list_favorite_channels(self, user_id: int) -> list:
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(Channel)
+                .join(Favorite, Favorite.target_id == Channel.id)
+                .where(
+                    Favorite.user_id == user_id,
+                    Favorite.target_type == FavoriteType.CHANNEL,
+                )
+                .order_by(Favorite.created_at.desc())
+            ).all()
+            return list(rows)
+
+    def list_favorite_posts(self, user_id: int) -> list:
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(UserPosts)
+                .join(Favorite, Favorite.target_id == UserPosts.id)
+                .where(
+                    Favorite.user_id == user_id,
+                    Favorite.target_type == FavoriteType.POST,
+                )
+                .order_by(Favorite.created_at.desc())
+            ).all()
+            return list(rows)
+
+    def cleanup_favorite_channel(self, channel_id: int) -> None:
+        """Drop any favorite rows pointing at a channel that no longer exists."""
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(Favorite).where(
+                    Favorite.target_type == FavoriteType.CHANNEL,
+                    Favorite.target_id == channel_id,
+                )
+            ).all()
+            for row in rows:
+                session.delete(row)
+            session.commit()
+
+    def cleanup_favorite_post(self, post_id: int) -> None:
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(Favorite).where(
+                    Favorite.target_type == FavoriteType.POST,
+                    Favorite.target_id == post_id,
+                )
+            ).all()
+            for row in rows:
+                session.delete(row)
+            session.commit()
 
 
 

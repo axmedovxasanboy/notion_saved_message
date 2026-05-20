@@ -15,10 +15,11 @@ def get_admin_keyboards() -> ReplyKeyboardMarkup:
     builder.button(text=getenv("NOTION_MAIN_WORKSPACE_BUTTON_TEXT", "NONE"))
     builder.button(text="Ideas 💡")
     builder.button(text="Reminders ⏰")
+    builder.button(text="Favorites ⭐")
     builder.button(text="Settings ⚙️")
     builder.button(text="Sync 🔄")
 
-    builder.adjust(3, 2)
+    builder.adjust(3, 3)
 
     return builder.as_markup(resize_keyboard=True)
 
@@ -123,15 +124,19 @@ def get_channels_list_keyboard(channels: List[Channel], page: int = 0) -> Inline
     return builder.as_markup()
 
 
-def get_channel_detail_keyboard(channel: Channel, from_page: int = 0) -> InlineKeyboardMarkup:
+def get_channel_detail_keyboard(
+    channel: Channel, from_page: int = 0, is_favorite: bool = False,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="📝 View posts", callback_data=f"CH_POSTS_{channel.id}")
+    fav_label = "⭐ Unfavorite" if is_favorite else "☆ Favorite"
+    builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_CH_{channel.id}")
     builder.button(text="✏️ Rename", callback_data=f"CH_RENAME_{channel.id}")
     builder.button(text="🔖 Edit username", callback_data=f"CH_USERNAME_{channel.id}")
     builder.button(text="🔀 Merge into…", callback_data=f"CH_MERGE_{channel.id}")
     builder.button(text="🗑 Delete", callback_data=f"CH_DELETE_{channel.id}")
     builder.button(text="⬅️ Back to channels", callback_data=f"CH_LIST_PAGE_{from_page}")
-    builder.adjust(2, 2, 1, 1)
+    builder.adjust(2, 2, 1, 1, 1)
     return builder.as_markup()
 
 
@@ -167,14 +172,16 @@ def get_channel_posts_keyboard(channel: Channel, posts: List[UserPosts]) -> Inli
     return builder.as_markup()
 
 
-def get_post_detail_keyboard(post: UserPosts) -> InlineKeyboardMarkup:
+def get_post_detail_keyboard(post: UserPosts, is_favorite: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    fav_label = "⭐ Unfavorite" if is_favorite else "☆ Favorite"
+    builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_POST_{post.id}")
     builder.button(text="✏️ Edit title", callback_data=f"POST_TITLE_{post.id}")
     builder.button(text="🔀 Move to…", callback_data=f"POST_MOVE_{post.id}")
     builder.button(text="🗑 Delete", callback_data=f"POST_DELETE_{post.id}")
     if post.channel_id is not None:
         builder.button(text="⬅️ Back", callback_data=f"CH_POSTS_{post.channel_id}")
-    builder.adjust(2, 1, 1)
+    builder.adjust(1, 2, 1, 1)
     return builder.as_markup()
 
 
@@ -219,6 +226,39 @@ def get_settings_keyboard(user: User) -> InlineKeyboardMarkup:
         builder.button(text=f"{label}{marker}", callback_data=f"SET_SYNC_{minutes}")
 
     builder.adjust(2, 1, 3, 3)
+    return builder.as_markup()
+
+
+def get_favorites_menu_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📺 Channels", callback_data="FAV_TYPE_CH")
+    builder.button(text="📝 Posts", callback_data="FAV_TYPE_POST")
+    builder.adjust(2)
+    return builder.as_markup()
+
+
+def get_favorite_channels_keyboard(channels: List[Channel]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for channel in channels:
+        suffix = f"@{channel.username}" if channel.username else channel.external_id
+        builder.button(
+            text=f"⭐ {channel.name} ({suffix})",
+            callback_data=f"FAV_OPEN_CH_{channel.id}",
+        )
+    builder.button(text="⬅️ Back", callback_data="FAV_MENU")
+    builder.adjust(1, repeat=True)
+    return builder.as_markup()
+
+
+def get_favorite_posts_keyboard(posts: List[UserPosts]) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for post in posts:
+        builder.button(
+            text=f"⭐ {_post_label(post)}",
+            callback_data=f"FAV_OPEN_POST_{post.id}",
+        )
+    builder.button(text="⬅️ Back", callback_data="FAV_MENU")
+    builder.adjust(1, repeat=True)
     return builder.as_markup()
 
 

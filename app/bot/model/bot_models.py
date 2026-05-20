@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
 
 class NotionPageType(Enum):
@@ -75,6 +76,23 @@ class User(SQLModel, table=True):
     auto_sync_interval_minutes: int = Field(default=0, nullable=False)
 
     posts: List["UserPosts"] = Relationship(back_populates="user")
+
+
+class FavoriteType(str, Enum):
+    CHANNEL = "channel"
+    POST = "post"
+
+
+class Favorite(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("user_id", "target_type", "target_id", name="uq_favorite_user_target"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", nullable=False)
+    target_type: FavoriteType = Field(nullable=False)
+    target_id: int = Field(nullable=False)
+    created_at: datetime = Field(default_factory=datetime.now, nullable=False)
 
 
 class Channel(SQLModel, table=True):

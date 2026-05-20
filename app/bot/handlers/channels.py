@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot import keyboards
 from bot.model.bot_models import BotSteps, Channel, UserPosts
-from bot.services import channel_service, user_service
+from bot.services import channel_service, favorites_service, user_service
 from container import services
 from notion import notion_service
 
@@ -145,12 +145,17 @@ async def show_channel(query: CallbackQuery, bot: Bot) -> None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
         return
 
-    text = _format_channel_detail(channel)
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    is_favorite = user is not None and favorites_service.is_channel_favorite(user.id, channel.id)
+
+    text = _format_channel_detail(channel, is_favorite=is_favorite)
     await bot.edit_message_text(
         text=text,
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        reply_markup=keyboards.get_channel_detail_keyboard(channel, from_page=from_page),
+        reply_markup=keyboards.get_channel_detail_keyboard(
+            channel, from_page=from_page, is_favorite=is_favorite,
+        ),
         disable_web_page_preview=True,
     )
     await bot.answer_callback_query(query.id)
@@ -167,12 +172,13 @@ async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
 
     posts = channel_service.list_posts(channel.id)
     if not posts:
-        text = _format_channel_detail(channel) + "\n\n<i>No posts yet.</i>"
+        is_favorite = _channel_is_favorite(query, channel.id)
+        text = _format_channel_detail(channel, is_favorite=is_favorite) + "\n\n<i>No posts yet.</i>"
         await bot.edit_message_text(
             text=text,
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
-            reply_markup=keyboards.get_channel_detail_keyboard(channel),
+            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_favorite),
             disable_web_page_preview=True,
         )
     else:
@@ -290,12 +296,15 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
         await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
         return
 
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    is_favorite = user is not None and favorites_service.is_post_favorite(user.id, post.id)
+
     try:
         await bot.edit_message_text(
-            text=_format_post_detail(post, full=True),
+            text=_format_post_detail(post, full=True, is_favorite=is_favorite),
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
-            reply_markup=keyboards.get_post_detail_keyboard(post),
+            reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
             disable_web_page_preview=True,
         )
     except Exception as exc:
@@ -305,10 +314,10 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
             link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
             note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
             await bot.edit_message_text(
-                text=_format_post_detail(post, full=False) + note,
+                text=_format_post_detail(post, full=False, is_favorite=is_favorite) + note,
                 chat_id=query.message.chat.id,
                 message_id=query.message.message_id,
-                reply_markup=keyboards.get_post_detail_keyboard(post),
+                reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
                 disable_web_page_preview=True,
             )
         else:
@@ -364,11 +373,12 @@ async def execute_post_move(query: CallbackQuery, bot: Bot) -> None:
         await bot.answer_callback_query(query.id, text=f"Move failed: {exc}", show_alert=True)
         return
     await bot.answer_callback_query(query.id, text="Moved.")
+    is_favorite = _post_is_favorite(query, post.id)
     await bot.edit_message_text(
-        text=_format_post_detail(post),
+        text=_format_post_detail(post, is_favorite=is_favorite),
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
-        reply_markup=keyboards.get_post_detail_keyboard(post),
+        reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
         disable_web_page_preview=True,
     )
 
@@ -417,11 +427,12 @@ async def execute_delete_post(query: CallbackQuery, bot: Bot) -> None:
                     reply_markup=keyboards.get_channel_posts_keyboard(channel, posts),
                 )
                 return
+            is_favorite = _channel_is_favorite(query, channel.id)
             await bot.edit_message_text(
-                text=_format_channel_detail(channel) + "\n\n<i>No posts yet.</i>",
+                text=_format_channel_detail(channel, is_favorite=is_favorite) + "\n\n<i>No posts yet.</i>",
                 chat_id=query.message.chat.id,
                 message_id=query.message.message_id,
-                reply_markup=keyboards.get_channel_detail_keyboard(channel),
+                reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_favorite),
                 disable_web_page_preview=True,
             )
             return
@@ -451,9 +462,10 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         except Exception as exc:  # noqa: BLE001
             await bot.send_message(chat_id, f"Rename failed: {exc}")
             return True
+        is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
             chat_id, f"Renamed to <b>{channel.name}</b>.",
-            reply_markup=keyboards.get_channel_detail_keyboard(channel),
+            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_fav),
         )
         return True
 
@@ -469,9 +481,10 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
             await bot.send_message(chat_id, f"Username update failed: {exc}")
             return True
         label = f"@{channel.username}" if channel.username else "(none)"
+        is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
             chat_id, f"Username set to {label}.",
-            reply_markup=keyboards.get_channel_detail_keyboard(channel),
+            reply_markup=keyboards.get_channel_detail_keyboard(channel, is_favorite=is_fav),
         )
         return True
 
@@ -485,9 +498,10 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         except Exception as exc:  # noqa: BLE001
             await bot.send_message(chat_id, f"Title update failed: {exc}")
             return True
+        is_fav = favorites_service.is_post_favorite(user.id, post.id)
         await bot.send_message(
             chat_id, f"Title updated: <b>{post.saved_title}</b>",
-            reply_markup=keyboards.get_post_detail_keyboard(post),
+            reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_fav),
         )
         return True
 
@@ -519,6 +533,24 @@ def _parse_int(data: str, prefix: str) -> Optional[int]:
         return None
 
 
+def _channel_is_favorite(query: CallbackQuery, channel_id: int) -> bool:
+    if query.message is None:
+        return False
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    if user is None:
+        return False
+    return favorites_service.is_channel_favorite(user.id, channel_id)
+
+
+def _post_is_favorite(query: CallbackQuery, post_id: int) -> bool:
+    if query.message is None:
+        return False
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    if user is None:
+        return False
+    return favorites_service.is_post_favorite(user.id, post_id)
+
+
 def _parse_channel_view(data: str) -> tuple[Optional[int], int]:
     """Parse CH_VIEW_{id} or CH_VIEW_{id}_P{page}. Returns (channel_id, page)."""
     raw = data.replace("CH_VIEW_", "", 1)
@@ -534,12 +566,13 @@ def _parse_channel_view(data: str) -> tuple[Optional[int], int]:
         return None, 0
 
 
-def _format_channel_detail(channel: Channel) -> str:
+def _format_channel_detail(channel: Channel, is_favorite: bool = False) -> str:
     suffix = f"@{channel.username}" if channel.username else channel.external_id
     post_count = channel_service.count_posts(channel.id)
     link = notion_service.page_url(channel.notion_page_id)
+    star = " ⭐" if is_favorite else ""
     parts = [
-        f"<b>{channel.name}</b>",
+        f"<b>{channel.name}</b>{star}",
         f"id: {suffix}",
         f"posts: {post_count}",
     ]
@@ -548,10 +581,11 @@ def _format_channel_detail(channel: Channel) -> str:
     return "\n".join(parts)
 
 
-def _format_post_detail(post: UserPosts, full: bool = True) -> str:
+def _format_post_detail(post: UserPosts, full: bool = True, is_favorite: bool = False) -> str:
     title = post.saved_title or post.custom_title or post.gpt_title or post.claude_title or "(untitled)"
     link = notion_service.page_url(post.saved_notion_page_id)
-    parts = [f"<b>{title}</b>"]
+    star = " ⭐" if is_favorite else ""
+    parts = [f"<b>{title}</b>{star}"]
     if link:
         parts.append(f'<a href="{link}">Open in Notion</a>')
     snippet = (post.post or "").strip()
