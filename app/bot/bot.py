@@ -206,6 +206,34 @@ async def post_delete_cbq(query: CallbackQuery) -> None:
     await channels.request_delete_post(query, handler_bot)
 
 
+# Order matters: the more specific POST_MERGE_GO_, POST_MERGE_PICK_,
+# POST_MERGE_PAGE_, POST_MERGE_NOOP variants must register BEFORE the bare
+# POST_MERGE_ prefix or the latter would swallow them.
+@dp.callback_query(F.data.startswith("POST_MERGE_GO_"))
+async def post_merge_go_cbq(query: CallbackQuery) -> None:
+    await channels.execute_post_merge(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("POST_MERGE_PICK_"))
+async def post_merge_pick_cbq(query: CallbackQuery) -> None:
+    await channels.request_merge_date(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("POST_MERGE_PAGE_"))
+async def post_merge_page_cbq(query: CallbackQuery) -> None:
+    await channels.request_post_merge(query, handler_bot)
+
+
+@dp.callback_query(F.data == "POST_MERGE_NOOP")
+async def post_merge_noop_cbq(query: CallbackQuery) -> None:
+    await channels.request_post_merge(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("POST_MERGE_"))
+async def post_merge_cbq(query: CallbackQuery) -> None:
+    await channels.request_post_merge(query, handler_bot)
+
+
 @dp.callback_query(F.data.startswith("SET_"))
 async def settings_cbq(query: CallbackQuery) -> None:
     await settings.handle_callback(query, handler_bot)

@@ -5,6 +5,8 @@ from typing import List, Optional
 
 from sqlalchemy.exc import IntegrityError
 
+from datetime import datetime
+
 from bot.model.bot_models import Channel, UserPosts
 from bot.services import favorites_service
 from container import services
@@ -81,8 +83,8 @@ def count_posts_by_channels(channel_ids: list[int]) -> dict[int, int]:
     return services.db.count_posts_by_channels(channel_ids)
 
 
-def list_posts(channel_id: int) -> List[UserPosts]:
-    return services.db.list_posts_for_channel(channel_id)
+def list_posts(channel_id: int, sort_order: str = "desc") -> List[UserPosts]:
+    return services.db.list_posts_for_channel(channel_id, sort_order=sort_order)
 
 
 async def ensure_notion_page(channel: Channel) -> str:
@@ -202,3 +204,41 @@ async def delete_post(post: UserPosts) -> None:
         await notion_service.archive_page(post.saved_notion_page_id)
     favorites_service.remove_post_favorites(post.id)
     services.db.delete_post(post)
+
+
+async def merge_posts(
+    kept: UserPosts, target: UserPosts, original_post_date: datetime,
+) -> UserPosts:
+    """Merge `target` into `kept` — both posts must belong to the same channel.
+
+    The combined body is `kept.post + "\\n\\n" + target.post`; `kept.original_post_date`
+    is overwritten with the caller-supplied value (which is what drives the sort).
+    On Notion: the kept page's Posted-At property is updated and target's body is
+    appended; target's Notion page is archived. The target row is deleted locally
+    (and its favorites cleaned up) so the merge result is a single row."""
+    if kept.id == target.id:
+        raise ValueError("Cannot merge a post with itself")
+    if kept.channel_id != target.channel_id:
+        raise ValueError("Posts must belong to the same channel to merge")
+
+    kept_body = (kept.post or "").rstrip()
+    target_body = (target.post or "").lstrip()
+    if kept_body and target_body:
+        kept.post = f"{kept_body}\n\n{target_body}"
+    else:
+        kept.post = kept_body or target_body
+    kept.original_post_date = original_post_date
+
+    if kept.saved_notion_page_id:
+        await notion_service.update_page_properties(
+            kept.saved_notion_page_id,
+            notion_service.date_prop(notion_service.PROP_POSTED_AT, original_post_date),
+        )
+        if target_body:
+            await notion_service.append_page_blocks(kept.saved_notion_page_id, target_body)
+
+    if target.saved_notion_page_id:
+        await notion_service.archive_page(target.saved_notion_page_id)
+    favorites_service.remove_post_favorites(target.id)
+    services.db.delete_post(target)
+    return services.db.save_or_update_post(kept)

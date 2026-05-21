@@ -43,6 +43,10 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
             return
     elif data == "SET_AUTOSAVE_TOGGLE":
         user = user_service.set_auto_save(user, not user.auto_save)
+    elif data == "SET_POSTS_SORT_TOGGLE":
+        current = user.posts_sort_order or "desc"
+        new_order = "asc" if current == "desc" else "desc"
+        user = user_service.set_posts_sort_order(user, new_order)
     elif data.startswith("SET_SYNC_"):
         minutes = _parse_int(data, "SET_SYNC_")
         if minutes is None:
@@ -75,10 +79,16 @@ def _format(user: User) -> str:
         sync_label = f"every {hours} hour{'s' if hours != 1 else ''}"
     else:
         sync_label = f"every {sync} minutes"
+    sort_label = (
+        "Newest first (by post date)"
+        if (user.posts_sort_order or "desc") == "desc"
+        else "Oldest first (by post date)"
+    )
     return (
         "<b>⚙️ Settings</b>\n\n"
         f"🤖 Auto-title AI: <b>{ai_label}</b>\n"
         f"💾 Auto-save forwards: <b>{save_label}</b>\n"
+        f"🗓 Posts order: <b>{sort_label}</b>\n"
         f"⏰ Auto-sync from Notion: <b>{sync_label}</b>"
     )
 

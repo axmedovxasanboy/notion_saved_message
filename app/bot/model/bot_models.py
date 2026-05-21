@@ -78,6 +78,9 @@ class User(SQLModel, table=True):
     # list. Persisted so that navigating channel → posts → post → back returns to
     # the original page instead of resetting to page 1.
     current_channel_page: int = Field(default=0, nullable=False)
+    # "desc" (newest first) or "asc" (oldest first) — sort applied to the per-channel
+    # posts list, keyed on UserPosts.original_post_date.
+    posts_sort_order: str = Field(default="desc", nullable=False)
 
     posts: List["UserPosts"] = Relationship(back_populates="user")
 

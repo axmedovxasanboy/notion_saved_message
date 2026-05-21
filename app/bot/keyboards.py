@@ -216,13 +216,75 @@ def get_post_detail_keyboard(
     builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_POST_{post.id}")
     builder.button(text="✏️ Edit title", callback_data=f"POST_TITLE_{post.id}")
     builder.button(text="🔀 Move to…", callback_data=f"POST_MOVE_{post.id}")
+    if post.channel_id is not None:
+        builder.button(text="🔗 Merge with…", callback_data=f"POST_MERGE_{post.id}")
     builder.button(text="🗑 Delete", callback_data=f"POST_DELETE_{post.id}")
     if post.channel_id is not None:
         builder.button(
             text="⬅️ Back",
             callback_data=f"CH_POSTS_{post.channel_id}_P{from_post_page}",
         )
-    builder.adjust(1, 2, 1, 1)
+        builder.adjust(1, 2, 1, 1, 1)
+    else:
+        builder.adjust(1, 2, 1)
+    return builder.as_markup()
+
+
+def get_post_merge_picker_keyboard(
+    kept: UserPosts, candidates: List[UserPosts], page: int = 0,
+) -> InlineKeyboardMarkup:
+    """Paginated list of other posts in the same channel that `kept` can be merged with."""
+    builder = InlineKeyboardBuilder()
+    page_posts, page, total_pages = paginate_posts(candidates, page)
+    base_index = page * POSTS_PER_PAGE
+    for offset, post in enumerate(page_posts, start=1):
+        date_prefix = (
+            f"{post.original_post_date.strftime('%Y-%m-%d')} · "
+            if post.original_post_date else ""
+        )
+        builder.button(
+            text=f"{base_index + offset}. {date_prefix}{_post_label(post)}",
+            callback_data=f"POST_MERGE_PICK_{kept.id}_{post.id}",
+        )
+
+    nav: list[tuple[str, str]] = []
+    if page > 0:
+        nav.append(("⬅️ Prev", f"POST_MERGE_PAGE_{kept.id}_{page - 1}"))
+    if total_pages > 1:
+        nav.append((f"· {page + 1}/{total_pages} ·", "POST_MERGE_NOOP"))
+    if page < total_pages - 1:
+        nav.append(("Next ➡️", f"POST_MERGE_PAGE_{kept.id}_{page + 1}"))
+    for text, data in nav:
+        builder.button(text=text, callback_data=data)
+
+    builder.button(text="⬅️ Cancel", callback_data=f"POST_VIEW_{kept.id}")
+
+    rows: list[int] = [1] * len(page_posts)
+    if nav:
+        rows.append(len(nav))
+    rows.append(1)
+    builder.adjust(*rows)
+    return builder.as_markup()
+
+
+def get_merge_date_keyboard(kept: UserPosts, target: UserPosts) -> InlineKeyboardMarkup:
+    """Three choices for the merged post's `original_post_date` (the sort key)."""
+    builder = InlineKeyboardBuilder()
+    if kept.original_post_date is not None:
+        d = kept.original_post_date.strftime("%Y-%m-%d")
+        builder.button(
+            text=f"📅 Keep this post's date ({d})",
+            callback_data=f"POST_MERGE_GO_{kept.id}_{target.id}_kept",
+        )
+    if target.original_post_date is not None:
+        d = target.original_post_date.strftime("%Y-%m-%d")
+        builder.button(
+            text=f"📅 Use other post's date ({d})",
+            callback_data=f"POST_MERGE_GO_{kept.id}_{target.id}_target",
+        )
+    builder.button(text="📅 Use today's date", callback_data=f"POST_MERGE_GO_{kept.id}_{target.id}_today")
+    builder.button(text="⬅️ Cancel", callback_data=f"POST_VIEW_{kept.id}")
+    builder.adjust(1, repeat=True)
     return builder.as_markup()
 
 
@@ -262,11 +324,18 @@ def get_settings_keyboard(user: User) -> InlineKeyboardMarkup:
     save_label = "💾 Auto-save: ON" if user.auto_save else "💾 Auto-save: OFF"
     builder.button(text=save_label, callback_data="SET_AUTOSAVE_TOGGLE")
 
+    sort_label = (
+        "🗓 Posts: Newest first"
+        if (user.posts_sort_order or "desc") == "desc"
+        else "🗓 Posts: Oldest first"
+    )
+    builder.button(text=sort_label, callback_data="SET_POSTS_SORT_TOGGLE")
+
     for minutes, label in SYNC_INTERVAL_PRESETS:
         marker = " ✓" if user.auto_sync_interval_minutes == minutes else ""
         builder.button(text=f"{label}{marker}", callback_data=f"SET_SYNC_{minutes}")
 
-    builder.adjust(2, 1, 3, 3)
+    builder.adjust(2, 1, 1, 3, 3)
     return builder.as_markup()
 
 

@@ -82,6 +82,12 @@ class DatabaseManager:
                         'ALTER TABLE "user" ADD COLUMN current_channel_page INTEGER '
                         'NOT NULL DEFAULT 0'
                     ))
+            if "posts_sort_order" not in existing:
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        'ALTER TABLE "user" ADD COLUMN posts_sort_order VARCHAR '
+                        "NOT NULL DEFAULT 'desc'"
+                    ))
 
     def _backfill_channels(self) -> None:
         """Group existing channel-destined posts into Channel records (idempotent)."""
@@ -231,11 +237,26 @@ class DatabaseManager:
             counts.setdefault(cid, 0)
         return counts
 
-    def list_posts_for_channel(self, channel_id: int) -> list:
+    def list_posts_for_channel(self, channel_id: int, sort_order: str = "desc") -> list:
+        # Order by the original post date (taken from forward_origin.date), not by
+        # creation/forward time. Posts with no original_post_date (older synced rows)
+        # are pushed to the end regardless of direction so they never crowd the top.
+        # `id` is the tiebreaker so the order is deterministic across requests.
         with Session(self._engine) as session:
-            return list(session.exec(
-                select(UserPosts).where(UserPosts.channel_id == channel_id).order_by(UserPosts.id.desc())
-            ).all())
+            stmt = select(UserPosts).where(UserPosts.channel_id == channel_id)
+            if sort_order == "asc":
+                stmt = stmt.order_by(
+                    UserPosts.original_post_date.is_(None),
+                    UserPosts.original_post_date.asc(),
+                    UserPosts.id.asc(),
+                )
+            else:
+                stmt = stmt.order_by(
+                    UserPosts.original_post_date.is_(None),
+                    UserPosts.original_post_date.desc(),
+                    UserPosts.id.desc(),
+                )
+            return list(session.exec(stmt).all())
 
     def reassign_posts(self, from_channel_id: int, to_channel_id: int) -> int:
         with Session(self._engine) as session:

@@ -256,6 +256,18 @@ async def archive_page(page_id: str) -> None:
     await _delete_json(f"{NOTION_API_BASE}/blocks/{page_id}")
 
 
+async def append_page_blocks(page_id: str, body: str) -> None:
+    """Append `body` (Telegram HTML) as new paragraph blocks at the end of an
+    existing Notion page. Existing blocks are preserved — this only adds."""
+    if not body:
+        return
+    blocks = _text_to_paragraph_blocks(body)
+    while blocks:
+        batch = blocks[:NOTION_BLOCKS_PER_REQUEST]
+        blocks = blocks[NOTION_BLOCKS_PER_REQUEST:]
+        await _patch_json(f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch})
+
+
 def page_url(page_id: Optional[str]) -> Optional[str]:
     if not page_id:
         return None

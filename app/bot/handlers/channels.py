@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from aiogram import Bot
@@ -199,7 +200,7 @@ async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
         return
 
-    posts = channel_service.list_posts(channel.id)
+    posts = channel_service.list_posts(channel.id, sort_order=_posts_sort_order(query))
     if not posts:
         is_favorite = _channel_is_favorite(query, channel.id)
         from_page = _saved_channel_page(query)
@@ -431,6 +432,116 @@ async def execute_post_move(query: CallbackQuery, bot: Bot) -> None:
     )
 
 
+async def request_post_merge(query: CallbackQuery, bot: Bot) -> None:
+    """Step 1 of the merge flow: show the paginated picker of candidate posts in
+    the same channel. Dispatched for both `POST_MERGE_{kept_id}` (open page 0) and
+    `POST_MERGE_PAGE_{kept_id}_{page}` (paginate within the picker)."""
+    if query.message is None or not query.data:
+        return
+    if query.data == "POST_MERGE_NOOP":
+        await bot.answer_callback_query(query.id)
+        return
+    kept_id, page = _parse_merge_picker(query.data)
+    kept = services.db.get_post_by_id(kept_id) if kept_id else None
+    if kept is None:
+        await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
+        return
+    if kept.channel_id is None:
+        await bot.answer_callback_query(
+            query.id, text="Only channel posts can be merged.", show_alert=True,
+        )
+        return
+    sort_order = _posts_sort_order(query)
+    candidates = [p for p in channel_service.list_posts(kept.channel_id, sort_order=sort_order) if p.id != kept.id]
+    if not candidates:
+        await bot.answer_callback_query(
+            query.id, text="No other posts in this channel to merge with.", show_alert=True,
+        )
+        return
+    _, page, total_pages = keyboards.paginate_posts(candidates, page)
+    header_lines = [
+        f"<b>Merge into:</b> {keyboards._post_label(kept)}",
+        f"Pick the other post to merge in ({len(candidates)} available)",
+    ]
+    if total_pages > 1:
+        header_lines.append(f"page {page + 1}/{total_pages}")
+    await bot.edit_message_text(
+        text="\n".join(header_lines),
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        reply_markup=keyboards.get_post_merge_picker_keyboard(kept, candidates, page=page),
+    )
+    await bot.answer_callback_query(query.id)
+
+
+async def request_merge_date(query: CallbackQuery, bot: Bot) -> None:
+    """Step 2 of the merge flow: the user picked the target post; offer date choices."""
+    if query.message is None or not query.data:
+        return
+    kept_id, target_id = _parse_merge_pick(query.data)
+    kept = services.db.get_post_by_id(kept_id) if kept_id else None
+    target = services.db.get_post_by_id(target_id) if target_id else None
+    if kept is None or target is None:
+        await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
+        return
+    if kept.channel_id != target.channel_id:
+        await bot.answer_callback_query(
+            query.id, text="Both posts must be in the same channel.", show_alert=True,
+        )
+        return
+    text = (
+        f"<b>Merging:</b>\n"
+        f"• {keyboards._post_label(kept)}\n"
+        f"• {keyboards._post_label(target)}\n\n"
+        f"Pick the date to use for sorting:"
+    )
+    await bot.edit_message_text(
+        text=text,
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        reply_markup=keyboards.get_merge_date_keyboard(kept, target),
+    )
+    await bot.answer_callback_query(query.id)
+
+
+async def execute_post_merge(query: CallbackQuery, bot: Bot) -> None:
+    """Step 3 of the merge flow: combine bodies, set the chosen date, update Notion,
+    archive target. Lands the admin back on the merged post's detail screen."""
+    if query.message is None or not query.data:
+        return
+    kept_id, target_id, choice = _parse_merge_go(query.data)
+    kept = services.db.get_post_by_id(kept_id) if kept_id else None
+    target = services.db.get_post_by_id(target_id) if target_id else None
+    if kept is None or target is None:
+        await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
+        return
+
+    if choice == "kept" and kept.original_post_date is not None:
+        merged_date = kept.original_post_date
+    elif choice == "target" and target.original_post_date is not None:
+        merged_date = target.original_post_date
+    else:
+        # "today" — and the fallback for "kept"/"target" when that side has no date
+        # (shouldn't happen since the keyboard hides those buttons, but stay safe).
+        merged_date = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    try:
+        kept = await channel_service.merge_posts(kept, target, merged_date)
+    except Exception as exc:  # noqa: BLE001
+        await bot.answer_callback_query(query.id, text=f"Merge failed: {exc}", show_alert=True)
+        return
+
+    await bot.answer_callback_query(query.id, text="Merged.")
+    is_favorite = _post_is_favorite(query, kept.id)
+    await bot.edit_message_text(
+        text=_format_post_detail(kept, is_favorite=is_favorite),
+        chat_id=query.message.chat.id,
+        message_id=query.message.message_id,
+        reply_markup=keyboards.get_post_detail_keyboard(kept, is_favorite=is_favorite),
+        disable_web_page_preview=True,
+    )
+
+
 async def request_delete_post(query: CallbackQuery, bot: Bot) -> None:
     if query.message is None or not query.data:
         return
@@ -466,7 +577,7 @@ async def execute_delete_post(query: CallbackQuery, bot: Bot) -> None:
     if channel_id is not None:
         channel = channel_service.get_channel(channel_id)
         if channel is not None:
-            posts = channel_service.list_posts(channel.id)
+            posts = channel_service.list_posts(channel.id, sort_order=_posts_sort_order(query))
             if posts:
                 await bot.edit_message_text(
                     text=f"<b>Posts in {channel.name}</b> ({len(posts)} total)",
@@ -617,6 +728,17 @@ def _saved_channel_page(query: CallbackQuery) -> int:
     return user.current_channel_page
 
 
+def _posts_sort_order(query: CallbackQuery) -> str:
+    """The user's preferred sort direction for per-channel post lists.
+    Falls back to "desc" if we can't resolve the user."""
+    if query.message is None:
+        return "desc"
+    user = user_service.get_user_by_chat_id(str(query.message.chat.id))
+    if user is None:
+        return "desc"
+    return user.posts_sort_order or "desc"
+
+
 def _parse_channel_view(data: str) -> tuple[Optional[int], Optional[int]]:
     """Parse CH_VIEW_{id} or CH_VIEW_{id}_P{page}. Returns (channel_id, page_or_None).
     The second element is None when the callback didn't carry a page — the caller
@@ -647,6 +769,46 @@ def _parse_channel_posts(data: str) -> tuple[Optional[int], Optional[int]]:
         return int(raw), None
     except ValueError:
         return None, None
+
+
+def _parse_merge_picker(data: str) -> tuple[Optional[int], int]:
+    """Parse POST_MERGE_{kept_id} (open page 0) or POST_MERGE_PAGE_{kept_id}_{page}."""
+    if data.startswith("POST_MERGE_PAGE_"):
+        raw = data.replace("POST_MERGE_PAGE_", "", 1)
+        kept_str, _, page_str = raw.partition("_")
+        try:
+            return int(kept_str), int(page_str)
+        except ValueError:
+            return None, 0
+    raw = data.replace("POST_MERGE_", "", 1)
+    try:
+        return int(raw), 0
+    except ValueError:
+        return None, 0
+
+
+def _parse_merge_pick(data: str) -> tuple[Optional[int], Optional[int]]:
+    """Parse POST_MERGE_PICK_{kept_id}_{target_id}."""
+    raw = data.replace("POST_MERGE_PICK_", "", 1)
+    parts = raw.split("_")
+    if len(parts) != 2:
+        return None, None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
+def _parse_merge_go(data: str) -> tuple[Optional[int], Optional[int], str]:
+    """Parse POST_MERGE_GO_{kept_id}_{target_id}_{choice} where choice ∈ {kept, target, today}."""
+    raw = data.replace("POST_MERGE_GO_", "", 1)
+    parts = raw.split("_")
+    if len(parts) != 3:
+        return None, None, "today"
+    try:
+        return int(parts[0]), int(parts[1]), parts[2]
+    except ValueError:
+        return None, None, "today"
 
 
 def _parse_post_view(data: str) -> tuple[Optional[int], int]:

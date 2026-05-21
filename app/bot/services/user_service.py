@@ -76,6 +76,13 @@ def set_auto_sync_interval(user: User, minutes: int) -> User:
     return bot_repository.update_user(user)
 
 
+def set_posts_sort_order(user: User, order: str) -> User:
+    if order not in ("desc", "asc"):
+        raise ValueError(f"Unsupported sort order: {order}")
+    user.posts_sort_order = order
+    return bot_repository.update_user(user)
+
+
 def set_current_channel_page(user: User, page: int) -> User:
     """Remember which page of the paginated channels list the admin is on.
     A no-op when the value matches the existing one (avoids needless DB writes)."""
