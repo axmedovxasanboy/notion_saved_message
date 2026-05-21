@@ -694,4 +694,9 @@ def _format_post_detail(post: UserPosts, full: bool = True, is_favorite: bool = 
     if snippet:
         parts.append("")
         parts.append(snippet)
+    if post.original_post_date is not None:
+        parts.append("")
+        parts.append(
+            f"<i>Posted: {post.original_post_date.strftime('%Y-%m-%d %H:%M')} UTC</i>"
+        )
     return "\n".join(parts)

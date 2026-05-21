@@ -179,8 +179,12 @@ def get_channel_posts_keyboard(
     page_posts, page, total_pages = paginate_posts(posts, page)
     base_index = page * POSTS_PER_PAGE
     for offset, post in enumerate(page_posts, start=1):
+        date_prefix = (
+            f"{post.original_post_date.strftime('%Y-%m-%d')} · "
+            if post.original_post_date else ""
+        )
         builder.button(
-            text=f"{base_index + offset}. {_post_label(post)}",
+            text=f"{base_index + offset}. {date_prefix}{_post_label(post)}",
             callback_data=f"POST_VIEW_{post.id}_P{page}",
         )
 
