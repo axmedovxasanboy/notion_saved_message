@@ -82,6 +82,7 @@ def get_forward_message_cbq(forwarded_message_id: str, post: UserPosts) -> Inlin
 
 
 CHANNELS_PER_PAGE = 8
+POSTS_PER_PAGE = 8
 
 
 def paginate_channels(channels: List[Channel], page: int) -> tuple[List[Channel], int, int]:
@@ -93,6 +94,14 @@ def paginate_channels(channels: List[Channel], page: int) -> tuple[List[Channel]
     page = max(0, min(page, total - 1))
     start = page * CHANNELS_PER_PAGE
     return channels[start:start + CHANNELS_PER_PAGE], page, total
+
+
+def paginate_posts(posts: List[UserPosts], page: int) -> tuple[List[UserPosts], int, int]:
+    """Return (posts_for_this_page, clamped_page, total_pages)."""
+    total = max(1, (len(posts) + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+    page = max(0, min(page, total - 1))
+    start = page * POSTS_PER_PAGE
+    return posts[start:start + POSTS_PER_PAGE], page, total
 
 
 def get_channels_list_keyboard(channels: List[Channel], page: int = 0) -> InlineKeyboardMarkup:
@@ -163,16 +172,41 @@ def get_delete_confirm_keyboard(channel: Channel) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_channel_posts_keyboard(channel: Channel, posts: List[UserPosts]) -> InlineKeyboardMarkup:
+def get_channel_posts_keyboard(
+    channel: Channel, posts: List[UserPosts], page: int = 0,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for index, post in enumerate(posts, start=1):
-        builder.button(text=f"{index}. {_post_label(post)}", callback_data=f"POST_VIEW_{post.id}")
+    page_posts, page, total_pages = paginate_posts(posts, page)
+    base_index = page * POSTS_PER_PAGE
+    for offset, post in enumerate(page_posts, start=1):
+        builder.button(
+            text=f"{base_index + offset}. {_post_label(post)}",
+            callback_data=f"POST_VIEW_{post.id}_P{page}",
+        )
+
+    nav: list[tuple[str, str]] = []
+    if page > 0:
+        nav.append(("⬅️ Prev", f"CH_POSTS_{channel.id}_P{page - 1}"))
+    if total_pages > 1:
+        nav.append((f"· {page + 1}/{total_pages} ·", "CH_POSTS_NOOP"))
+    if page < total_pages - 1:
+        nav.append(("Next ➡️", f"CH_POSTS_{channel.id}_P{page + 1}"))
+    for text, data in nav:
+        builder.button(text=text, callback_data=data)
+
     builder.button(text="⬅️ Back to channel", callback_data=f"CH_VIEW_{channel.id}")
-    builder.adjust(1, repeat=True)
+
+    rows: list[int] = [1] * len(page_posts)
+    if nav:
+        rows.append(len(nav))
+    rows.append(1)
+    builder.adjust(*rows)
     return builder.as_markup()
 
 
-def get_post_detail_keyboard(post: UserPosts, is_favorite: bool = False) -> InlineKeyboardMarkup:
+def get_post_detail_keyboard(
+    post: UserPosts, is_favorite: bool = False, from_post_page: int = 0,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     fav_label = "⭐ Unfavorite" if is_favorite else "☆ Favorite"
     builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_POST_{post.id}")
@@ -180,7 +214,10 @@ def get_post_detail_keyboard(post: UserPosts, is_favorite: bool = False) -> Inli
     builder.button(text="🔀 Move to…", callback_data=f"POST_MOVE_{post.id}")
     builder.button(text="🗑 Delete", callback_data=f"POST_DELETE_{post.id}")
     if post.channel_id is not None:
-        builder.button(text="⬅️ Back", callback_data=f"CH_POSTS_{post.channel_id}")
+        builder.button(
+            text="⬅️ Back",
+            callback_data=f"CH_POSTS_{post.channel_id}_P{from_post_page}",
+        )
     builder.adjust(1, 2, 1, 1)
     return builder.as_markup()
 

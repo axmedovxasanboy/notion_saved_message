@@ -26,3 +26,6 @@ env/
 # Claude Code local settings
 .claude/settings.local.json
 
+# Handoff / session-context docs (not source of truth)
+HANDOFF.md
+

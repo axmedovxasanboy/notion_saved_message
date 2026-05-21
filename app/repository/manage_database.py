@@ -234,7 +234,7 @@ class DatabaseManager:
     def list_posts_for_channel(self, channel_id: int) -> list:
         with Session(self._engine) as session:
             return list(session.exec(
-                select(UserPosts).where(UserPosts.channel_id == channel_id).order_by(UserPosts.id)
+                select(UserPosts).where(UserPosts.channel_id == channel_id).order_by(UserPosts.id.desc())
             ).all())
 
     def reassign_posts(self, from_channel_id: int, to_channel_id: int) -> int:

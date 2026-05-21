@@ -188,7 +188,12 @@ async def show_channel(query: CallbackQuery, bot: Bot) -> None:
 async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
     if query.message is None or not query.data:
         return
-    channel_id = _parse_int(query.data, "CH_POSTS_")
+    if query.data == "CH_POSTS_NOOP":
+        # The page-indicator pill in the keyboard is non-interactive; ack so the
+        # spinner clears but don't redraw.
+        await bot.answer_callback_query(query.id)
+        return
+    channel_id, requested_page = _parse_channel_posts(query.data)
     channel = channel_service.get_channel(channel_id) if channel_id else None
     if channel is None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
@@ -209,12 +214,15 @@ async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
             disable_web_page_preview=True,
         )
     else:
-        text = f"<b>Posts in {channel.name}</b> ({len(posts)} total)"
+        _, page, total_pages = keyboards.paginate_posts(posts, requested_page or 0)
+        header = f"<b>Posts in {channel.name}</b> ({len(posts)} total)"
+        if total_pages > 1:
+            header += f" — page {page + 1}/{total_pages}"
         await bot.edit_message_text(
-            text=text,
+            text=header,
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
-            reply_markup=keyboards.get_channel_posts_keyboard(channel, posts),
+            reply_markup=keyboards.get_channel_posts_keyboard(channel, posts, page=page),
         )
     await bot.answer_callback_query(query.id)
 
@@ -317,7 +325,7 @@ async def execute_delete_channel(query: CallbackQuery, bot: Bot) -> None:
 async def show_post(query: CallbackQuery, bot: Bot) -> None:
     if query.message is None or not query.data:
         return
-    post_id = _parse_int(query.data, "POST_VIEW_")
+    post_id, from_post_page = _parse_post_view(query.data)
     post = services.db.get_post_by_id(post_id) if post_id else None
     if post is None:
         await bot.answer_callback_query(query.id, text="Post not found.", show_alert=True)
@@ -326,12 +334,15 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
     user = user_service.get_user_by_chat_id(str(query.message.chat.id))
     is_favorite = user is not None and favorites_service.is_post_favorite(user.id, post.id)
 
+    keyboard = keyboards.get_post_detail_keyboard(
+        post, is_favorite=is_favorite, from_post_page=from_post_page,
+    )
     try:
         await bot.edit_message_text(
             text=_format_post_detail(post, full=True, is_favorite=is_favorite),
             chat_id=query.message.chat.id,
             message_id=query.message.message_id,
-            reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
+            reply_markup=keyboard,
             disable_web_page_preview=True,
         )
     except Exception as exc:
@@ -349,7 +360,7 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
                     text=_format_post_detail(post, full=False, is_favorite=is_favorite) + note,
                     chat_id=query.message.chat.id,
                     message_id=query.message.message_id,
-                    reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
+                    reply_markup=keyboard,
                     disable_web_page_preview=True,
                 )
             except Exception as inner_exc:  # noqa: BLE001
@@ -621,6 +632,38 @@ def _parse_channel_view(data: str) -> tuple[Optional[int], Optional[int]]:
         return int(raw), None
     except ValueError:
         return None, None
+
+
+def _parse_channel_posts(data: str) -> tuple[Optional[int], Optional[int]]:
+    """Parse CH_POSTS_{id} or CH_POSTS_{id}_P{page}. Returns (channel_id, page_or_None)."""
+    raw = data.replace("CH_POSTS_", "", 1)
+    if "_P" in raw:
+        id_part, page_part = raw.rsplit("_P", 1)
+        try:
+            return int(id_part), int(page_part)
+        except ValueError:
+            pass
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, None
+
+
+def _parse_post_view(data: str) -> tuple[Optional[int], int]:
+    """Parse POST_VIEW_{id} or POST_VIEW_{id}_P{page}. Returns (post_id, page).
+    Page defaults to 0 when the callback didn't carry one (e.g. POST_VIEW_{id}
+    coming back from a cancelled move/delete confirm)."""
+    raw = data.replace("POST_VIEW_", "", 1)
+    if "_P" in raw:
+        id_part, page_part = raw.rsplit("_P", 1)
+        try:
+            return int(id_part), int(page_part)
+        except ValueError:
+            pass
+    try:
+        return int(raw), 0
+    except ValueError:
+        return None, 0
 
 
 def _format_channel_detail(channel: Channel, is_favorite: bool = False) -> str:
