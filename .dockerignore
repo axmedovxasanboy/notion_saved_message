@@ -1,0 +1,36 @@
+# VCS / IDE / OS
+.git
+.gitignore
+.github/
+.claude/
+.idea
+.vscode
+.DS_Store
+
+# Secrets & local data (never bake into the image — .env is mounted at runtime,
+# the SQLite DB lives on a host volume)
+.env
+.env.*
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.log
+
+# Python caches & virtualenvs
+__pycache__/
+*.py[cod]
+.venv
+venv
+env/
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Not needed at runtime
+tests/
+*.md
+HANDOFF.md
+DEPLOY.md
+Caddyfile.example

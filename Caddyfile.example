@@ -1,0 +1,18 @@
+# Add this block to the shared Caddyfile your Caddy container already loads (the
+# tracker stack's Caddyfile). Caddy obtains/renews TLS automatically and
+# reverse-proxies the public subdomain to the bot container by name over the
+# shared Docker network — so the bot never publishes a public port and never
+# handles TLS itself.
+#
+# Requirements:
+#   - DNS A/AAAA for notion-saved-message.xasanboy.dev points at this server (done).
+#   - The Caddy container and the notion-saved-message container share the
+#     external Docker network `app_app-network`, so Caddy can resolve the
+#     container name below. (Caddy already joins it for namaz-bot.)
+#
+# After adding the block, reload Caddy (adjust the container name / config path):
+#   docker exec <caddy-container> caddy reload --config /etc/caddy/Caddyfile
+
+notion-saved-message.xasanboy.dev {
+    reverse_proxy notion-saved-message:8080
+}

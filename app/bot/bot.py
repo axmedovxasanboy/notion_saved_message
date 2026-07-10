@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from os import getenv
 
 from aiogram import Bot, Dispatcher, F
@@ -7,6 +8,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
 
 from notion import notion_service as notion_api
@@ -276,11 +279,88 @@ async def favorites_toggle_post_cbq(query: CallbackQuery) -> None:
     await favorites.toggle_post_favorite(query, handler_bot)
 
 
-async def main() -> None:
+# ---------------------------------------------------------------------------
+# Startup work shared by both run modes
+# ---------------------------------------------------------------------------
+
+async def _bootstrap() -> None:
     # Idempotently create (or find) the three root databases inside the
     # Channels / Poems / User Quotes pages before any forward is processed.
     # If this fails, every save flow downstream is broken — better to abort
-    # startup with a clear log line than poll-loop while save_post returns 400s.
+    # startup with a clear log line than serve updates while save_post 400s.
     await notion_api.bootstrap_root_databases()
+
+
+async def _health(_request: web.Request) -> web.Response:
+    """Unauthenticated liveness probe for Caddy / Docker HEALTHCHECK / uptime
+    pings: GET /health -> 200 'ok'. Mounted only in webhook mode."""
+    return web.Response(text="ok")
+
+
+# ---------------------------------------------------------------------------
+# Run modes — chosen by RUN_MODE (polling = local dev, webhook = production).
+# ---------------------------------------------------------------------------
+
+async def run_polling() -> None:
+    await _bootstrap()
     asyncio.create_task(sync_service.auto_sync_loop())
+    # Drop any webhook a previous production deploy registered, otherwise
+    # Telegram keeps delivering by webhook and long polling errors with 409.
+    await handler_bot.delete_webhook(drop_pending_updates=False)
+    _log.info("Starting in POLLING mode")
     await dp.start_polling(handler_bot)
+
+
+def run_webhook() -> None:
+    # Fail closed: aiogram treats an empty secret_token as "accept every POST",
+    # so a missing WEBHOOK_SECRET would let anyone inject updates. Refuse to run.
+    secret = getenv("WEBHOOK_SECRET", "").strip()
+    if not secret:
+        _log.error("RUN_MODE=webhook requires WEBHOOK_SECRET to be set; refusing to start.")
+        sys.exit(1)
+
+    host = getenv("WEBHOOK_HOST", "notion-saved-message.xasanboy.dev").strip()
+    port = int(getenv("PORT", "8080"))
+    webhook_path = f"/webhook/{secret}"
+    webhook_url = f"https://{host}{webhook_path}"
+
+    async def on_startup(app: web.Application) -> None:
+        await _bootstrap()
+        app["sync_task"] = asyncio.create_task(sync_service.auto_sync_loop())
+        await handler_bot.set_webhook(
+            webhook_url,
+            secret_token=secret,
+            drop_pending_updates=True,
+        )
+        _log.info("Webhook set to %s", webhook_url)
+
+    async def on_shutdown(app: web.Application) -> None:
+        task = app.get("sync_task")
+        if task is not None:
+            task.cancel()
+        await handler_bot.delete_webhook()
+        await handler_bot.session.close()
+        _log.info("Webhook deleted, resources released")
+
+    app = web.Application()
+    app.router.add_get("/health", _health)
+    # secret_token makes aiogram validate the X-Telegram-Bot-Api-Secret-Token
+    # header on every request; the secret is ALSO embedded in the path below, so
+    # an attacker must know it just to reach the handler (defence in depth).
+    SimpleRequestHandler(
+        dispatcher=dp, bot=handler_bot, secret_token=secret
+    ).register(app, path=webhook_path)
+    setup_application(app, dp, bot=handler_bot)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    _log.info("Starting in WEBHOOK mode on 0.0.0.0:%s (path /webhook/<secret>)", port)
+    web.run_app(app, host="0.0.0.0", port=port)
+
+
+def run() -> None:
+    """Entry point: pick the mode from RUN_MODE (defaults to polling for local dev)."""
+    if getenv("RUN_MODE", "polling").strip().lower() == "webhook":
+        run_webhook()
+    else:
+        asyncio.run(run_polling())

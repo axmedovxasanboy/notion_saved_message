@@ -1,0 +1,31 @@
+# Server compose for the Notion-saved-message bot — its OWN project, lives in
+# ~/notion-saved-message/ on the Hetzner VPS. Pulls the prebuilt image from GHCR
+# (CI builds & pushes it); it does NOT build here. Joins the EXISTING external
+# network so the shared Caddy (a separate compose project) can reach it by
+# container name. No public ports are published.
+
+services:
+  notion-saved-message:
+    image: ghcr.io/axmedovxasanboy/notion_saved_message:latest
+    container_name: notion-saved-message
+    restart: unless-stopped
+    environment:
+      # --- container-critical settings, pinned here (override anything in .env) ---
+      RUN_MODE: webhook
+      WEBHOOK_HOST: notion-saved-message.xasanboy.dev
+      PORT: "8080"                 # bot binds 0.0.0.0:8080 internally; NOT published
+    volumes:
+      - ./data:/app/data           # SQLite persistence on the host (survives redeploys)
+      # The app reads all its other config/secrets via load_dotenv() from this
+      # file. It is mounted (not passed via `env_file:`) because two values
+      # (PROMPT_POST_OVERVIEW, MSG_WELCOME) are MULTI-LINE, which compose's
+      # env_file parser mangles but python-dotenv handles correctly. Read-only.
+      - ./.env:/app/.env:ro
+    networks:
+      - app-network
+    # No `ports:` — Caddy reaches it by container name on the shared network.
+
+networks:
+  app-network:
+    external: true
+    name: app_app-network         # the shared network the tracker stack / Caddy created

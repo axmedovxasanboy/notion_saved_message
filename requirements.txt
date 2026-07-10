@@ -1,4 +1,5 @@
 aiogram==3.25.0
+aiohttp==3.13.3
 anthropic==0.97.0
 openai==2.20.0
 sqlmodel==0.0.34

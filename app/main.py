@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -13,10 +12,10 @@ if str(_APP_DIR) not in sys.path:
 
 import container  # noqa: E402
 
-from bot.bot import main  # noqa: E402
+from bot.bot import run  # noqa: E402
 
 if __name__ == '__main__':
     container.services.is_running()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    asyncio.run(main())
+    run()
 
