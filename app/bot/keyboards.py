@@ -1,11 +1,13 @@
 from typing import List
 
 from os import getenv
-from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, Message
+from aiogram.types import ReplyKeyboardMarkup, InlineKeyboardMarkup
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+from dotenv import load_dotenv
 
 from bot.model.bot_models import Channel, User, UserPosts
-from notion.model.notion import *
+from bot.text_utils import html_to_plain_text
+from notion.model.notion import NotionChildPage
 
 load_dotenv()
 
@@ -13,21 +15,12 @@ def get_admin_keyboards() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
 
     builder.button(text=getenv("NOTION_MAIN_WORKSPACE_BUTTON_TEXT", "NONE"))
-    builder.button(text="Ideas 💡")
-    builder.button(text="Reminders ⏰")
+    builder.button(text="Channels 📺")
     builder.button(text="Favorites ⭐")
     builder.button(text="Settings ⚙️")
     builder.button(text="Sync 🔄")
 
-    builder.adjust(3, 3)
-
-    return builder.as_markup(resize_keyboard=True)
-
-def get_inline_message_keyboards(user: User) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    data = (str(user.id) + "_:_" + str(user.chat_id))
-
-    builder.button(text="See this message, delete", callback_data=data)
+    builder.adjust(3, 2)
 
     return builder.as_markup(resize_keyboard=True)
 
@@ -49,11 +42,9 @@ def get_notion_workspace_page_buttons() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
 
     builder.button(text="Channels 📺")
-    builder.button(text="Poems 📜")
-    builder.button(text="User quotes 🖊")
     builder.button(text=getenv("NOTION_BACK_BUTTON_TEXT", "NONE"))
 
-    builder.adjust(3, 1)
+    builder.adjust(2)
 
     return builder.as_markup(resize_keyboard=True)
 
@@ -373,12 +364,14 @@ def get_favorite_posts_keyboard(posts: List[UserPosts]) -> InlineKeyboardMarkup:
 
 
 def _post_label(post: UserPosts) -> str:
+    # Bodies may be stored as Telegram HTML — strip to visible text before
+    # slicing so button labels never show fragments like "<b>Foo".
     title = (
         post.saved_title
         or post.custom_title
         or post.gpt_title
         or post.claude_title
-        or (post.post[:40].strip() if post.post else "(no title)")
+        or (html_to_plain_text(post.post)[:40].strip() if post.post else "(no title)")
     )
     if len(title) > 50:
         title = title[:47] + "…"

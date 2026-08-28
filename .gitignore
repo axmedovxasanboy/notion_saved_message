@@ -26,6 +26,9 @@ env/
 # Claude Code local settings
 .claude/settings.local.json
 
+# Machine-specific MCP config (contains a local IDE port)
+.mcp.json
+
 # Handoff / session-context docs (not source of truth)
 HANDOFF.md
 

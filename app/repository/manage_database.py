@@ -1,16 +1,19 @@
+import logging
 from pathlib import Path
 from sqlalchemy import Engine
-from sqlalchemy.orm import selectinload
 
 from bot.model.bot_models import Channel, Favorite, FavoriteType, PostDestination, User, UserPosts
-from exceptions.notion_exceptions import *
-from notion.model.notion import *
+# Imported for its side effect: registers the NotionLogs table on SQLModel's
+# metadata so create_all() below creates it.
+from notion.model.notion import NotionLogs  # noqa: F401
 from dotenv import load_dotenv
 from sqlmodel import SQLModel, create_engine, Session, select
 import os
 import uuid
 
 load_dotenv()
+
+_log = logging.getLogger(__name__)
 
 # Project root resolved from this file's location, not from CWD —
 # stable whether the bot is launched via `python app/main.py`, a service
@@ -58,16 +61,15 @@ class DatabaseManager:
         connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
         self._engine = create_engine(db_url, connect_args=connect_args)
         SQLModel.metadata.create_all(self._engine)
-        try:
-            self._apply_lightweight_migrations()
-        except Exception:
-            # Migrations are best-effort; if the schema isn't ready yet, skip silently.
-            pass
+        # Migrations are NOT best-effort: a missing column crashes the first
+        # query that touches it anyway, only later and with a far more
+        # confusing traceback. Fail here, loudly, at startup.
+        self._apply_lightweight_migrations()
         try:
             self._backfill_channels()
         except Exception:
-            # Backfill is best-effort; if the schema isn't ready yet, skip silently.
-            pass
+            # Backfill only regroups legacy rows — log it, don't block startup.
+            _log.exception("Channel backfill failed; continuing without it")
 
     def _apply_lightweight_migrations(self) -> None:
         """Add columns that newer model versions introduced to already-existing tables.
@@ -75,7 +77,8 @@ class DatabaseManager:
         from sqlalchemy import inspect, text
         inspector = inspect(self._engine)
         if "user" in inspector.get_table_names():
-            existing = {col["name"] for col in inspector.get_columns("user")}
+            columns = inspector.get_columns("user")
+            existing = {col["name"] for col in columns}
             if "current_channel_page" not in existing:
                 with self._engine.begin() as conn:
                     conn.execute(text(
@@ -88,6 +91,37 @@ class DatabaseManager:
                         'ALTER TABLE "user" ADD COLUMN posts_sort_order VARCHAR '
                         "NOT NULL DEFAULT 'desc'"
                     ))
+            username = next((c for c in columns if c["name"] == "username"), None)
+            if username is not None and not username.get("nullable", True):
+                self._rebuild_user_table_nullable_username()
+
+    def _rebuild_user_table_nullable_username(self) -> None:
+        """Relax the legacy NOT NULL on user.username (Telegram accounts don't
+        have to set a @username; inserting None crashed /start on old DBs).
+
+        SQLite can't drop NOT NULL via ALTER, so this follows the documented
+        rebuild recipe: create the new-shape table under a temp name, copy the
+        rows, drop the old table, rename the new one in. Renaming the OLD
+        table first would be wrong — modern SQLite rewrites other tables'
+        foreign-key clauses to follow a rename, which would leave them
+        pointing at the temp name. FK enforcement is off (SQLAlchemy's SQLite
+        driver never enables the pragma), so the drop is safe."""
+        from sqlalchemy import MetaData, inspect, text
+        _log.info("Migrating: rebuilding 'user' table to make username nullable")
+        tmp_name = "user_migration_new"
+        tmp_metadata = MetaData()
+        tmp_table = User.__table__.to_metadata(tmp_metadata, name=tmp_name)
+        with self._engine.begin() as conn:
+            conn.execute(text(f'DROP TABLE IF EXISTS "{tmp_name}"'))
+            tmp_table.create(conn)
+            old_cols = {c["name"] for c in inspect(conn).get_columns("user")}
+            common = [c.name for c in User.__table__.columns if c.name in old_cols]
+            col_list = ", ".join(f'"{c}"' for c in common)
+            conn.execute(text(
+                f'INSERT INTO "{tmp_name}" ({col_list}) SELECT {col_list} FROM "user"'
+            ))
+            conn.execute(text('DROP TABLE "user"'))
+            conn.execute(text(f'ALTER TABLE "{tmp_name}" RENAME TO "user"'))
 
     def _backfill_channels(self) -> None:
         """Group existing channel-destined posts into Channel records (idempotent)."""
@@ -130,28 +164,24 @@ class DatabaseManager:
     def get_engine(self):
         return self._engine
 
-    # NOTION RELATED DATABASE MANAGING
-
-    def save_notion_error_log(self, notion_exception: NotionPageIdNotSpecified):
-
-        log = NotionLogs(function_name = notion_exception.function_name, error=notion_exception.__str__())
-
-        with Session(self._engine) as session:
-            session.add(log)
-            session.commit()
-            session.refresh(log)
-
-
     def get_user_by_chat_id(self, chat_id: str) -> User | None:
+        # Deliberately does NOT eager-load user.posts: this runs on nearly
+        # every update (often more than once), and loading the full posts
+        # table each time gets slow fast. Posts are queried directly where
+        # needed (get_post_by_message_id, list_posts_for_channel, ...).
         with Session(self._engine) as session:
-            user = session.exec(
-                select(User)
-                .where(User.chat_id == chat_id)
-                .options(selectinload(User.posts))
+            return session.exec(
+                select(User).where(User.chat_id == chat_id)
             ).first()
-            if user:
-                return user
-            return None
+
+    def get_post_by_message_id(self, user_id: int, message_id: str) -> "UserPosts | None":
+        with Session(self._engine) as session:
+            return session.exec(
+                select(UserPosts).where(
+                    UserPosts.user_id == user_id,
+                    UserPosts.message_id == str(message_id),
+                )
+            ).first()
 
     def save_or_update_post(self, user_post: UserPosts) -> UserPosts:
         with Session(self._engine) as session:

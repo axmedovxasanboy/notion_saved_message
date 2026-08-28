@@ -20,8 +20,28 @@ from .services import notion_service, sync_service
 _log = logging.getLogger(__name__)
 
 load_dotenv()
+
+_BOT_TOKEN = getenv("BOT_TOKEN", "").strip()
+if not _BOT_TOKEN:
+    raise SystemExit("BOT_TOKEN is not set — add it to .env before starting the bot.")
+
 dp = Dispatcher()
-handler_bot = Bot(token=getenv("BOT_TOKEN", ""), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+handler_bot = Bot(token=_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+
+@dp.callback_query.outer_middleware()
+async def _admin_only_callbacks(handler, event: CallbackQuery, data: dict):
+    # Defence in depth: inline keyboards are only ever sent to the admin's
+    # private chat, but make the boundary structural instead of relying on
+    # that invariant (and on non-admin users having no DB row).
+    admin_chat_id = getenv("CHAT_ID")
+    if event.from_user is None or not admin_chat_id or str(event.from_user.id) != admin_chat_id:
+        try:
+            await event.answer()
+        except Exception:  # noqa: BLE001 — acking a stale query may fail; drop either way
+            pass
+        return None
+    return await handler(event, data)
 
 
 @dp.message(CommandStart())
@@ -321,7 +341,14 @@ def run_webhook() -> None:
 
     host = getenv("WEBHOOK_HOST", "notion-saved-message.xasanboy.dev").strip()
     port = int(getenv("PORT", "8080"))
-    webhook_path = f"/webhook/{secret}"
+    # The path is deliberately static. The secret used to be embedded in it,
+    # but request paths end up in aiohttp's access log, Caddy's logs, and the
+    # startup log line — and since the same value is also the
+    # X-Telegram-Bot-Api-Secret-Token header, leaking the path meant leaking
+    # the ability to forge updates. Authentication now lives ONLY in the
+    # header, which aiogram validates on every request and which no access
+    # log records.
+    webhook_path = "/webhook"
     webhook_url = f"https://{host}{webhook_path}"
 
     async def on_startup(app: web.Application) -> None:
@@ -340,13 +367,14 @@ def run_webhook() -> None:
             task.cancel()
         await handler_bot.delete_webhook()
         await handler_bot.session.close()
+        await notion_api.close_http_client()
         _log.info("Webhook deleted, resources released")
 
     app = web.Application()
     app.router.add_get("/health", _health)
     # secret_token makes aiogram validate the X-Telegram-Bot-Api-Secret-Token
-    # header on every request; the secret is ALSO embedded in the path below, so
-    # an attacker must know it just to reach the handler (defence in depth).
+    # header on every request — that header is the sole authentication for
+    # this endpoint (see the webhook_path comment above).
     SimpleRequestHandler(
         dispatcher=dp, bot=handler_bot, secret_token=secret
     ).register(app, path=webhook_path)
@@ -354,7 +382,7 @@ def run_webhook() -> None:
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
-    _log.info("Starting in WEBHOOK mode on 0.0.0.0:%s (path /webhook/<secret>)", port)
+    _log.info("Starting in WEBHOOK mode on 0.0.0.0:%s (path %s)", port, webhook_path)
     web.run_app(app, host="0.0.0.0", port=port)
 
 

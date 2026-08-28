@@ -11,8 +11,10 @@ ADMIN_CHAT_ID = getenv("CHAT_ID")
 
 
 async def welcome_message(message: Message, bot: Bot):
-    msg_welcome = getenv("MSG_WELCOME")
-    msg_welcome_admin = getenv("MSG_WELCOME_ADMIN")
+    # Fallbacks matter: send_message(None) is a Telegram error, so a missing
+    # env var must not take the /start flow down with it.
+    msg_welcome = getenv("MSG_WELCOME") or "Hello! This is a personal bot."
+    msg_welcome_admin = getenv("MSG_WELCOME_ADMIN") or "Welcome back 👋"
     chat_id = str(message.chat.id)
 
     if chat_id != ADMIN_CHAT_ID:

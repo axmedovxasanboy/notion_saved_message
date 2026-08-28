@@ -1,9 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
+
+
+def utcnow_naive() -> datetime:
+    """Naive UTC now — every datetime in the DB is stored naive-UTC so that
+    SQLite's string ordering compares them consistently (mixing naive local
+    times and "+00:00"-suffixed aware times breaks sorting)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class NotionPageType(Enum):
     MAIN = 1
@@ -63,7 +70,9 @@ class UserPosts(SQLModel, table=True):
 
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    username: str = Field(unique=True)
+    # Optional: Telegram accounts don't have to set a @username, and inserting
+    # None into a NOT NULL column crashed /start for such accounts.
+    username: Optional[str] = Field(default=None, unique=True)
     first_name: str = Field(nullable=False)
     last_name: Optional[str]
     chat_id: str = Field(nullable=False)
@@ -99,7 +108,7 @@ class Favorite(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", nullable=False)
     target_type: FavoriteType = Field(nullable=False)
     target_id: int = Field(nullable=False)
-    created_at: datetime = Field(default_factory=datetime.now, nullable=False)
+    created_at: datetime = Field(default_factory=utcnow_naive, nullable=False)
 
 
 class Channel(SQLModel, table=True):
@@ -113,6 +122,6 @@ class Channel(SQLModel, table=True):
     # The id of the per-channel "Posts" database that lives inside this
     # channel's row page. Created lazily on first save.
     notion_posts_db_id: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=utcnow_naive)
 
     posts: List["UserPosts"] = Relationship(back_populates="channel")

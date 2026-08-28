@@ -15,7 +15,8 @@ import container  # noqa: E402
 from bot.bot import run  # noqa: E402
 
 if __name__ == '__main__':
-    container.services.is_running()
+    # Logging first so DB-init / migration messages are visible.
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    container.services.is_running()
     run()
 

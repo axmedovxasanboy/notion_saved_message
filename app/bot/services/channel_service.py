@@ -211,11 +211,20 @@ async def merge_posts(
 ) -> UserPosts:
     """Merge `target` into `kept` — both posts must belong to the same channel.
 
-    The combined body is `kept.post + "\\n\\n" + target.post`; `kept.original_post_date`
-    is overwritten with the caller-supplied value (which is what drives the sort).
-    On Notion: the kept page's Posted-At property is updated and target's body is
-    appended; target's Notion page is archived. The target row is deleted locally
-    (and its favorites cleaned up) so the merge result is a single row."""
+    The combined local body is `kept.post + "\\n\\n" + target.post`;
+    `kept.original_post_date` is overwritten with the caller-supplied value
+    (which is what drives the sort).
+
+    On Notion the target page's REAL blocks are copied onto the kept page
+    before the target page is archived — the local body is only a preview
+    copy (synced posts are capped at a few thousand chars), so serialising it
+    would silently lose everything past the cap. The target page is never
+    archived unless its content ended up somewhere:
+      * kept has a page      -> copy target's blocks over, then archive target;
+      * only target has one  -> kept ADOPTS that page (so the next sync matches
+                                it instead of re-importing a duplicate) and
+                                kept's own body is appended to it;
+      * neither has a page   -> local-only merge, nothing to archive."""
     if kept.id == target.id:
         raise ValueError("Cannot merge a post with itself")
     if kept.channel_id != target.channel_id:
@@ -230,15 +239,52 @@ async def merge_posts(
     kept.original_post_date = original_post_date
 
     if kept.saved_notion_page_id:
+        if target.saved_notion_page_id:
+            # Read the target's real blocks FIRST and abort before touching
+            # anything if the copy would be lossy (images, tables, files,
+            # deeply nested lists...) — archiving a page whose content wasn't
+            # fully transferred is data loss.
+            blocks, complete = await notion_service.fetch_page_block_payloads(target.saved_notion_page_id)
+            if not complete:
+                raise ValueError(
+                    "The other post's Notion page contains content that can't be "
+                    "transferred automatically (images, tables, files or deeply "
+                    "nested blocks). Merge it by hand in Notion instead."
+                )
+            await notion_service.update_page_properties(
+                kept.saved_notion_page_id,
+                notion_service.date_prop(notion_service.PROP_POSTED_AT, original_post_date),
+            )
+            if blocks:
+                await notion_service.append_block_payloads(kept.saved_notion_page_id, blocks)
+            await notion_service.archive_page(target.saved_notion_page_id)
+        else:
+            await notion_service.update_page_properties(
+                kept.saved_notion_page_id,
+                notion_service.date_prop(notion_service.PROP_POSTED_AT, original_post_date),
+            )
+            if target_body:
+                await notion_service.append_page_blocks(kept.saved_notion_page_id, target_body)
+    elif target.saved_notion_page_id:
+        # Kept was never saved to Notion: adopt the target's page rather than
+        # archiving content we have no full copy of. Kept's own body goes after
+        # the adopted content (Notion has no cheap prepend), so the Notion page
+        # orders the two halves target-first while the local body is kept-first.
+        kept.saved_notion_page_id = target.saved_notion_page_id
         await notion_service.update_page_properties(
             kept.saved_notion_page_id,
             notion_service.date_prop(notion_service.PROP_POSTED_AT, original_post_date),
         )
-        if target_body:
-            await notion_service.append_page_blocks(kept.saved_notion_page_id, target_body)
+        merged_title = kept.saved_title or kept.custom_title or kept.gpt_title or kept.claude_title
+        if merged_title:
+            await notion_service.update_page_properties(
+                kept.saved_notion_page_id,
+                notion_service.title_prop(notion_service.PROP_TITLE, merged_title),
+            )
+            kept.saved_title = merged_title
+        if kept_body:
+            await notion_service.append_page_blocks(kept.saved_notion_page_id, kept_body)
 
-    if target.saved_notion_page_id:
-        await notion_service.archive_page(target.saved_notion_page_id)
     favorites_service.remove_post_favorites(target.id)
     services.db.delete_post(target)
     return services.db.save_or_update_post(kept)

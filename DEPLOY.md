@@ -23,9 +23,12 @@ the shared `app_app-network`.
 
 ## Webhook & security
 
-- Telegram POSTs to `https://notion-saved-message.xasanboy.dev/webhook/<WEBHOOK_SECRET>`.
-- The secret is in the URL path **and** validated on every request via the
-  `X-Telegram-Bot-Api-Secret-Token` header (aiogram `secret_token`).
+- Telegram POSTs to `https://notion-saved-message.xasanboy.dev/webhook` (a
+  **static** path — deliberately no secret in the URL: request paths land in
+  aiohttp/Caddy access logs, and a logged secret is a leaked secret).
+- Authentication is the `X-Telegram-Bot-Api-Secret-Token` header, which
+  aiogram validates against `WEBHOOK_SECRET` on **every** request
+  (`secret_token`). Requests without the correct header are rejected.
 - `RUN_MODE=webhook` **fails closed**: the bot refuses to start without
   `WEBHOOK_SECRET` (an empty secret would let aiogram accept any POST).
 - `GET /health` → `200 ok` (unauthenticated) for Caddy / Docker HEALTHCHECK.
@@ -112,7 +115,7 @@ Caddy must be attached to `app_app-network` (it already is for namaz-bot).
 
 ```bash
 docker compose ps                            # notion-saved-message -> "healthy"
-docker compose logs -f notion-saved-message  # look for "Webhook set to https://notion-saved-message.xasanboy.dev/webhook/..."
+docker compose logs -f notion-saved-message  # look for "Webhook set to https://notion-saved-message.xasanboy.dev/webhook"
 curl -s https://notion-saved-message.xasanboy.dev/health                    # -> ok
 curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"            # url set, pending=0, no last_error
 ```

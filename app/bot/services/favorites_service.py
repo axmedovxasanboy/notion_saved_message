@@ -1,6 +1,6 @@
-from typing import List, Optional
+from typing import List
 
-from bot.model.bot_models import Channel, Favorite, FavoriteType, UserPosts
+from bot.model.bot_models import Channel, FavoriteType, UserPosts
 from container import services
 
 

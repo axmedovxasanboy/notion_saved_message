@@ -1,7 +1,7 @@
 from container import services
 from exceptions.notion_exceptions import NotionPageIdNotSpecified
 from notion.model.notion import NotionLogs
-from sqlmodel import SQLModel, create_engine, Session, select
+from sqlmodel import Session
 
 
 

@@ -5,8 +5,9 @@ from aiogram import Bot
 from aiogram.types import CallbackQuery, Message
 
 from bot import keyboards
-from bot.model.bot_models import Channel, UserPosts
-from bot.services import channel_service, favorites_service, user_service
+from bot.model.bot_models import Channel
+from bot.services import bot_message_service, channel_service, favorites_service, user_service
+from bot.text_utils import esc
 from container import services
 from notion import notion_service
 
@@ -130,39 +131,11 @@ async def open_favorite_post(query: CallbackQuery, bot: Bot) -> None:
         return
     user = user_service.get_user_by_chat_id(str(query.message.chat.id))
     is_favorite = user is not None and favorites_service.is_post_favorite(user.id, post.id)
-    try:
-        await bot.edit_message_text(
-            text=_format_post(post, full=True, is_favorite=is_favorite),
-            chat_id=query.message.chat.id,
-            message_id=query.message.message_id,
-            reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
-            disable_web_page_preview=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        err = str(exc).lower()
-        if "message is not modified" in err or "message_not_modified" in err:
-            await bot.answer_callback_query(query.id)
-            return
-        if "too long" in err or "message_too_long" in err or "message is too long" in err:
-            link = notion_service.page_url(post.saved_notion_page_id)
-            link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
-            note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
-            try:
-                await bot.edit_message_text(
-                    text=_format_post(post, full=False, is_favorite=is_favorite) + note,
-                    chat_id=query.message.chat.id,
-                    message_id=query.message.message_id,
-                    reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
-                    disable_web_page_preview=True,
-                )
-            except Exception as inner_exc:  # noqa: BLE001
-                await bot.answer_callback_query(
-                    query.id, text=f"Error: {inner_exc}", show_alert=True,
-                )
-                return
-        else:
-            await bot.answer_callback_query(query.id, text=f"Error: {exc}", show_alert=True)
-            return
+    if not await bot_message_service.render_post_edit(
+        bot, query, post, is_favorite=is_favorite, include_date=False,
+        reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
+    ):
+        return
     await bot.answer_callback_query(query.id)
 
 
@@ -208,27 +181,11 @@ async def toggle_post_favorite(query: CallbackQuery, bot: Bot) -> None:
         return
 
     now_favorite = favorites_service.toggle_post_favorite(user.id, post.id)
-    try:
-        await bot.edit_message_text(
-            text=_format_post(post, full=True, is_favorite=now_favorite),
-            chat_id=query.message.chat.id,
-            message_id=query.message.message_id,
-            reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=now_favorite),
-            disable_web_page_preview=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        err = str(exc).lower()
-        if "too long" in err or "message_too_long" in err or "message is too long" in err:
-            link = notion_service.page_url(post.saved_notion_page_id)
-            link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
-            note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
-            await bot.edit_message_text(
-                text=_format_post(post, full=False, is_favorite=now_favorite) + note,
-                chat_id=query.message.chat.id,
-                message_id=query.message.message_id,
-                reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=now_favorite),
-                disable_web_page_preview=True,
-            )
+    if not await bot_message_service.render_post_edit(
+        bot, query, post, is_favorite=now_favorite, include_date=False,
+        reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=now_favorite),
+    ):
+        return
     await bot.answer_callback_query(
         query.id, text="Added to favorites." if now_favorite else "Removed from favorites.",
     )
@@ -251,28 +208,12 @@ def _format_channel(channel: Channel, is_favorite: bool = False) -> str:
     link = notion_service.page_url(channel.notion_page_id)
     star = " ⭐" if is_favorite else ""
     parts = [
-        f"<b>{channel.name}</b>{star}",
-        f"id: {suffix}",
+        f"<b>{esc(channel.name)}</b>{star}",
+        f"id: {esc(suffix)}",
         f"posts: {post_count}",
     ]
     if link:
         parts.append(f'<a href="{link}">Open in Notion</a>')
-    return "\n".join(parts)
-
-
-def _format_post(post: UserPosts, full: bool = True, is_favorite: bool = False) -> str:
-    title = post.saved_title or post.custom_title or post.gpt_title or post.claude_title or "(untitled)"
-    link = notion_service.page_url(post.saved_notion_page_id)
-    star = " ⭐" if is_favorite else ""
-    parts = [f"<b>{title}</b>{star}"]
-    if link:
-        parts.append(f'<a href="{link}">Open in Notion</a>')
-    snippet = (post.post or "").strip()
-    if not full and len(snippet) > 500:
-        snippet = snippet[:500] + "…"
-    if snippet:
-        parts.append("")
-        parts.append(snippet)
     return "\n".join(parts)
 
 

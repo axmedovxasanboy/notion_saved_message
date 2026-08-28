@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from bot.model.bot_models import Channel, PostDestination, UserPosts
@@ -264,9 +264,14 @@ def _read_date(row: dict, prop_name: str) -> Optional[datetime]:
     try:
         # Notion returns ISO 8601 with offset; Python's fromisoformat (3.11+)
         # handles `Z` natively, but we normalize for older interpreters too.
-        return datetime.fromisoformat(start.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(start.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # Store naive UTC, like every other datetime in the DB — mixed naive/aware
+    # values sort inconsistently in SQLite's string ordering.
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 async def auto_sync_loop() -> None:

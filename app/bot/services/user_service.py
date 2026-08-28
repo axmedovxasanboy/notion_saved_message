@@ -48,10 +48,9 @@ def save_or_update_post(user_post: UserPosts) -> UserPosts:
 
 
 def find_post_by_message_id(user: User, message_id: str) -> Optional[UserPosts]:
-    for post in user.posts:
-        if str(post.message_id) == str(message_id):
-            return post
-    return None
+    # Direct WHERE query — user.posts is no longer eager-loaded (it pulled the
+    # admin's entire post history into memory on every update).
+    return services.db.get_post_by_message_id(user.id, str(message_id))
 
 
 def set_awaiting_title(user: User, message_id: Optional[str]) -> User:

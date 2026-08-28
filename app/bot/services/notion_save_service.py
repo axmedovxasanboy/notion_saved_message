@@ -7,25 +7,6 @@ from container import services
 from notion import notion_service
 
 
-def detect_destination(text: str, forward_origin) -> PostDestination:
-    if _looks_like_poem(text):
-        return PostDestination.POEM
-    if forward_origin is not None and getattr(forward_origin, "type", None) == "channel":
-        return PostDestination.CHANNEL
-    return PostDestination.USER_QUOTE
-
-
-def _looks_like_poem(text: str) -> bool:
-    lines = [l for l in text.split("\n") if l.strip()]
-    if len(lines) < 4:
-        return False
-    short_lines = sum(1 for l in lines if len(l) <= 80)
-    if short_lines / len(lines) < 0.85:
-        return False
-    avg_len = sum(len(l) for l in lines) / len(lines)
-    return avg_len < 60
-
-
 def pick_title(post: UserPosts, choice: str) -> Optional[str]:
     if choice == "gpt":
         return post.gpt_title

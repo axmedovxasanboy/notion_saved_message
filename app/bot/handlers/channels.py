@@ -6,8 +6,9 @@ from aiogram import Bot
 from aiogram.types import CallbackQuery, Message
 
 from bot import keyboards
-from bot.model.bot_models import BotSteps, Channel, UserPosts
-from bot.services import channel_service, favorites_service, user_service
+from bot.model.bot_models import BotSteps, Channel
+from bot.services import bot_message_service, channel_service, favorites_service, user_service
+from bot.text_utils import esc
 from container import services
 from notion import notion_service
 
@@ -25,7 +26,7 @@ async def open_sync(message: Message, bot: Bot) -> None:
     async def report(line: str) -> None:
         try:
             await bot.edit_message_text(
-                text=f"Syncing from Notion…\n{line}",
+                text=f"Syncing from Notion…\n{esc(line)}",
                 chat_id=chat_id,
                 message_id=progress_msg.message_id,
             )
@@ -37,7 +38,7 @@ async def open_sync(message: Message, bot: Bot) -> None:
         result = await sync_service.sync_from_notion(progress=report)
     except Exception as exc:  # noqa: BLE001
         await bot.edit_message_text(
-            text=f"Sync failed: {exc}",
+            text=f"Sync failed: {esc(exc)}",
             chat_id=chat_id,
             message_id=progress_msg.message_id,
         )
@@ -109,7 +110,7 @@ async def _send_channels_list(
         link = notion_service.page_url(channel.notion_page_id)
         link_str = f' — <a href="{link}">notion</a>' if link else ""
         lines.append(
-            f"{base_index + offset}. <b>{channel.name}</b> ({suffix}) — {post_count} post(s){link_str}"
+            f"{base_index + offset}. <b>{esc(channel.name)}</b> ({esc(suffix)}) — {post_count} post(s){link_str}"
         )
     text = "\n".join(lines)
     keyboard = keyboards.get_channels_list_keyboard(channels, page=page)
@@ -216,7 +217,7 @@ async def show_channel_posts(query: CallbackQuery, bot: Bot) -> None:
         )
     else:
         _, page, total_pages = keyboards.paginate_posts(posts, requested_page or 0)
-        header = f"<b>Posts in {channel.name}</b> ({len(posts)} total)"
+        header = f"<b>Posts in {esc(channel.name)}</b> ({len(posts)} total)"
         if total_pages > 1:
             header += f" — page {page + 1}/{total_pages}"
         await bot.edit_message_text(
@@ -257,7 +258,7 @@ async def request_merge(query: CallbackQuery, bot: Bot) -> None:
         await bot.answer_callback_query(query.id, text="No other channels to merge into.", show_alert=True)
         return
     await bot.edit_message_text(
-        text=f"Merge <b>{channel.name}</b> into which channel?",
+        text=f"Merge <b>{esc(channel.name)}</b> into which channel?",
         chat_id=query.message.chat.id,
         message_id=query.message.message_id,
         reply_markup=keyboards.get_merge_target_keyboard(channel, others),
@@ -271,15 +272,20 @@ async def execute_merge(query: CallbackQuery, bot: Bot) -> None:
     parts = query.data.replace("CH_MERGE_GO_", "").split("_")
     if len(parts) != 2:
         return
-    source = channel_service.get_channel(int(parts[0]))
-    target = channel_service.get_channel(int(parts[1]))
+    try:
+        source_id, target_id = int(parts[0]), int(parts[1])
+    except ValueError:
+        await bot.answer_callback_query(query.id)
+        return
+    source = channel_service.get_channel(source_id)
+    target = channel_service.get_channel(target_id)
     if source is None or target is None:
         await bot.answer_callback_query(query.id, text="Channel not found.", show_alert=True)
         return
     try:
         moved = await channel_service.merge_into(source, target)
     except Exception as exc:  # noqa: BLE001
-        await bot.answer_callback_query(query.id, text=f"Merge failed: {exc}", show_alert=True)
+        await bot.answer_callback_query(query.id, text=f"Merge failed: {exc}"[:200], show_alert=True)
         return
     await bot.answer_callback_query(query.id, text=f"Moved {moved} post(s).")
     await _send_channels_list(bot, str(query.message.chat.id), edit_message_id=query.message.message_id)
@@ -296,7 +302,7 @@ async def request_delete_channel(query: CallbackQuery, bot: Bot) -> None:
     posts = channel_service.count_posts(channel.id)
     await bot.edit_message_text(
         text=(
-            f"⚠️ Delete <b>{channel.name}</b>? This archives the Notion page and "
+            f"⚠️ Delete <b>{esc(channel.name)}</b>? This archives the Notion page and "
             f"all {posts} post(s) under it."
         ),
         chat_id=query.message.chat.id,
@@ -317,7 +323,7 @@ async def execute_delete_channel(query: CallbackQuery, bot: Bot) -> None:
     try:
         await channel_service.delete_channel(channel)
     except Exception as exc:  # noqa: BLE001
-        await bot.answer_callback_query(query.id, text=f"Delete failed: {exc}", show_alert=True)
+        await bot.answer_callback_query(query.id, text=f"Delete failed: {exc}"[:200], show_alert=True)
         return
     await bot.answer_callback_query(query.id, text="Deleted.")
     await _send_channels_list(bot, str(query.message.chat.id), edit_message_id=query.message.message_id)
@@ -338,41 +344,10 @@ async def show_post(query: CallbackQuery, bot: Bot) -> None:
     keyboard = keyboards.get_post_detail_keyboard(
         post, is_favorite=is_favorite, from_post_page=from_post_page,
     )
-    try:
-        await bot.edit_message_text(
-            text=_format_post_detail(post, full=True, is_favorite=is_favorite),
-            chat_id=query.message.chat.id,
-            message_id=query.message.message_id,
-            reply_markup=keyboard,
-            disable_web_page_preview=True,
-        )
-    except Exception as exc:
-        err = str(exc).lower()
-        # Re-rendering the same text is a no-op for Telegram, but raises. Just ack.
-        if "message is not modified" in err or "message_not_modified" in err:
-            await bot.answer_callback_query(query.id)
-            return
-        if "too long" in err or "message_too_long" in err or "message is too long" in err:
-            link = notion_service.page_url(post.saved_notion_page_id)
-            link_str = f' <a href="{link}">Open full post in Notion →</a>' if link else ""
-            note = f"\n\n⚠️ <i>Post is too long for Telegram (limit: 4096 characters).{link_str}</i>"
-            try:
-                await bot.edit_message_text(
-                    text=_format_post_detail(post, full=False, is_favorite=is_favorite) + note,
-                    chat_id=query.message.chat.id,
-                    message_id=query.message.message_id,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True,
-                )
-            except Exception as inner_exc:  # noqa: BLE001
-                await bot.answer_callback_query(
-                    query.id, text=f"Error: {inner_exc}", show_alert=True,
-                )
-                return
-        else:
-            await bot.answer_callback_query(query.id, text=f"Error: {exc}", show_alert=True)
-            return
-
+    if not await bot_message_service.render_post_edit(
+        bot, query, post, is_favorite=is_favorite, reply_markup=keyboard,
+    ):
+        return
     await bot.answer_callback_query(query.id)
 
 
@@ -411,24 +386,26 @@ async def execute_post_move(query: CallbackQuery, bot: Bot) -> None:
     parts = query.data.replace("POST_MOVE_GO_", "").split("_")
     if len(parts) != 2:
         return
-    post = services.db.get_post_by_id(int(parts[0]))
-    target = channel_service.get_channel(int(parts[1]))
+    try:
+        post_id, target_id = int(parts[0]), int(parts[1])
+    except ValueError:
+        await bot.answer_callback_query(query.id)
+        return
+    post = services.db.get_post_by_id(post_id)
+    target = channel_service.get_channel(target_id)
     if post is None or target is None:
         await bot.answer_callback_query(query.id, text="Not found.", show_alert=True)
         return
     try:
         post = await channel_service.move_post(post, target)
     except Exception as exc:  # noqa: BLE001
-        await bot.answer_callback_query(query.id, text=f"Move failed: {exc}", show_alert=True)
+        await bot.answer_callback_query(query.id, text=f"Move failed: {exc}"[:200], show_alert=True)
         return
     await bot.answer_callback_query(query.id, text="Moved.")
     is_favorite = _post_is_favorite(query, post.id)
-    await bot.edit_message_text(
-        text=_format_post_detail(post, is_favorite=is_favorite),
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
+    await bot_message_service.render_post_edit(
+        bot, query, post, is_favorite=is_favorite,
         reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_favorite),
-        disable_web_page_preview=True,
     )
 
 
@@ -460,7 +437,7 @@ async def request_post_merge(query: CallbackQuery, bot: Bot) -> None:
         return
     _, page, total_pages = keyboards.paginate_posts(candidates, page)
     header_lines = [
-        f"<b>Merge into:</b> {keyboards._post_label(kept)}",
+        f"<b>Merge into:</b> {esc(keyboards._post_label(kept))}",
         f"Pick the other post to merge in ({len(candidates)} available)",
     ]
     if total_pages > 1:
@@ -491,8 +468,8 @@ async def request_merge_date(query: CallbackQuery, bot: Bot) -> None:
         return
     text = (
         f"<b>Merging:</b>\n"
-        f"• {keyboards._post_label(kept)}\n"
-        f"• {keyboards._post_label(target)}\n\n"
+        f"• {esc(keyboards._post_label(kept))}\n"
+        f"• {esc(keyboards._post_label(target))}\n\n"
         f"Pick the date to use for sorting:"
     )
     await bot.edit_message_text(
@@ -528,17 +505,14 @@ async def execute_post_merge(query: CallbackQuery, bot: Bot) -> None:
     try:
         kept = await channel_service.merge_posts(kept, target, merged_date)
     except Exception as exc:  # noqa: BLE001
-        await bot.answer_callback_query(query.id, text=f"Merge failed: {exc}", show_alert=True)
+        await bot.answer_callback_query(query.id, text=f"Merge failed: {exc}"[:200], show_alert=True)
         return
 
     await bot.answer_callback_query(query.id, text="Merged.")
     is_favorite = _post_is_favorite(query, kept.id)
-    await bot.edit_message_text(
-        text=_format_post_detail(kept, is_favorite=is_favorite),
-        chat_id=query.message.chat.id,
-        message_id=query.message.message_id,
+    await bot_message_service.render_post_edit(
+        bot, query, kept, is_favorite=is_favorite,
         reply_markup=keyboards.get_post_detail_keyboard(kept, is_favorite=is_favorite),
-        disable_web_page_preview=True,
     )
 
 
@@ -571,7 +545,7 @@ async def execute_delete_post(query: CallbackQuery, bot: Bot) -> None:
     try:
         await channel_service.delete_post(post)
     except Exception as exc:  # noqa: BLE001
-        await bot.answer_callback_query(query.id, text=f"Delete failed: {exc}", show_alert=True)
+        await bot.answer_callback_query(query.id, text=f"Delete failed: {exc}"[:200], show_alert=True)
         return
     await bot.answer_callback_query(query.id, text="Deleted.")
     if channel_id is not None:
@@ -580,7 +554,7 @@ async def execute_delete_post(query: CallbackQuery, bot: Bot) -> None:
             posts = channel_service.list_posts(channel.id, sort_order=_posts_sort_order(query))
             if posts:
                 await bot.edit_message_text(
-                    text=f"<b>Posts in {channel.name}</b> ({len(posts)} total)",
+                    text=f"<b>Posts in {esc(channel.name)}</b> ({len(posts)} total)",
                     chat_id=query.message.chat.id,
                     message_id=query.message.message_id,
                     reply_markup=keyboards.get_channel_posts_keyboard(channel, posts),
@@ -622,11 +596,11 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         try:
             channel = await channel_service.rename_channel(channel, text)
         except Exception as exc:  # noqa: BLE001
-            await bot.send_message(chat_id, f"Rename failed: {exc}")
+            await bot.send_message(chat_id, f"Rename failed: {esc(exc)}")
             return True
         is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
-            chat_id, f"Renamed to <b>{channel.name}</b>.",
+            chat_id, f"Renamed to <b>{esc(channel.name)}</b>.",
             reply_markup=keyboards.get_channel_detail_keyboard(
                 channel, from_page=user.current_channel_page, is_favorite=is_fav,
             ),
@@ -642,12 +616,12 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         try:
             channel = await channel_service.set_channel_username(channel, new_username)
         except Exception as exc:  # noqa: BLE001
-            await bot.send_message(chat_id, f"Username update failed: {exc}")
+            await bot.send_message(chat_id, f"Username update failed: {esc(exc)}")
             return True
         label = f"@{channel.username}" if channel.username else "(none)"
         is_fav = favorites_service.is_channel_favorite(user.id, channel.id)
         await bot.send_message(
-            chat_id, f"Username set to {label}.",
+            chat_id, f"Username set to {esc(label)}.",
             reply_markup=keyboards.get_channel_detail_keyboard(
                 channel, from_page=user.current_channel_page, is_favorite=is_fav,
             ),
@@ -662,11 +636,11 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         try:
             post = await channel_service.update_post_title(post, text)
         except Exception as exc:  # noqa: BLE001
-            await bot.send_message(chat_id, f"Title update failed: {exc}")
+            await bot.send_message(chat_id, f"Title update failed: {esc(exc)}")
             return True
         is_fav = favorites_service.is_post_favorite(user.id, post.id)
         await bot.send_message(
-            chat_id, f"Title updated: <b>{post.saved_title}</b>",
+            chat_id, f"Title updated: <b>{esc(post.saved_title)}</b>",
             reply_markup=keyboards.get_post_detail_keyboard(post, is_favorite=is_fav),
         )
         return True
@@ -834,31 +808,10 @@ def _format_channel_detail(channel: Channel, is_favorite: bool = False) -> str:
     link = notion_service.page_url(channel.notion_page_id)
     star = " ⭐" if is_favorite else ""
     parts = [
-        f"<b>{channel.name}</b>{star}",
-        f"id: {suffix}",
+        f"<b>{esc(channel.name)}</b>{star}",
+        f"id: {esc(suffix)}",
         f"posts: {post_count}",
     ]
     if link:
         parts.append(f'<a href="{link}">Open in Notion</a>')
-    return "\n".join(parts)
-
-
-def _format_post_detail(post: UserPosts, full: bool = True, is_favorite: bool = False) -> str:
-    title = post.saved_title or post.custom_title or post.gpt_title or post.claude_title or "(untitled)"
-    link = notion_service.page_url(post.saved_notion_page_id)
-    star = " ⭐" if is_favorite else ""
-    parts = [f"<b>{title}</b>{star}"]
-    if link:
-        parts.append(f'<a href="{link}">Open in Notion</a>')
-    snippet = (post.post or "").strip()
-    if not full and len(snippet) > 500:
-        snippet = snippet[:500] + "…"
-    if snippet:
-        parts.append("")
-        parts.append(snippet)
-    if post.original_post_date is not None:
-        parts.append("")
-        parts.append(
-            f"<i>Posted: {post.original_post_date.strftime('%Y-%m-%d %H:%M')} UTC</i>"
-        )
     return "\n".join(parts)

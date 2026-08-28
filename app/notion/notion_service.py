@@ -1,3 +1,5 @@
+import asyncio
+import html as html_lib
 import logging
 import os
 import re
@@ -10,8 +12,14 @@ import httpx
 from dotenv import load_dotenv
 
 from notion import notion_repository
-from notion.model.notion import *
-from exceptions.notion_exceptions import *
+from notion.model.notion import (
+    NotionAnnotations,
+    NotionChildPage,
+    NotionPageModel,
+    NotionParagraphs,
+    NotionText,
+)
+from exceptions.notion_exceptions import NotionPageIdNotSpecified
 
 _log = logging.getLogger(__name__)
 
@@ -24,8 +32,6 @@ def _log_notion(msg: str) -> None:
 
 load_dotenv()
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_PAGE_API = os.getenv("NOTION_PAGE_API")
-NOTION_PAGE_CONTENT_API = os.getenv("NOTION_PAGE_CONTENT_API")
 NOTION_MAIN_PAGE_ID = os.getenv("NOTION_MAIN_PAGE_ID")
 # Versions ≥ 2025-09-03 introduced the "data sources" split where DB property
 # definitions live on a data source instead of the database itself, which makes
@@ -126,28 +132,76 @@ def _raise_with_body(response: httpx.Response) -> None:
     )
 
 
+_MAX_ATTEMPTS = 5
+
+
+async def _request_json(
+    method: str, url: str, payload: Optional[dict] = None, *, idempotent: bool = True,
+) -> dict:
+    """One Notion API call with retry/backoff.
+
+    Notion rate-limits at ~3 requests/second (HTTP 429 with Retry-After);
+    without retries a long sync aborts midway the moment it hits the limit.
+    Honours Retry-After when present. 4xx errors other than 429 raise
+    immediately — they never succeed on retry.
+
+    Retry policy depends on whether replaying the call is safe:
+      * 429 — always retried: Notion rejected the request without processing.
+      * connect errors — always retried: the request never reached Notion.
+      * 5xx / post-send transport errors (read timeout, protocol error) —
+        retried ONLY for idempotent calls. A create-page POST or an
+        append-children PATCH may have been fully processed before the
+        failure surfaced; replaying it would duplicate pages/blocks."""
+    delay = 1.0
+    for attempt in range(_MAX_ATTEMPTS):
+        last = attempt == _MAX_ATTEMPTS - 1
+        try:
+            response = await _client().request(method, url, headers=_headers(), json=payload)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            if last:
+                raise
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        except httpx.TransportError:
+            if last or not idempotent:
+                raise
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+            continue
+        if response.status_code == 429 or (response.status_code >= 500 and idempotent):
+            if last:
+                _raise_with_body(response)
+            try:
+                retry_after = float(response.headers.get("Retry-After", delay))
+            except ValueError:
+                retry_after = delay
+            await asyncio.sleep(min(max(retry_after, delay), 30.0))
+            delay = min(delay * 2, 30.0)
+            continue
+        _raise_with_body(response)
+        return response.json()
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
 async def _get_json(url: str) -> dict:
-    response = await _client().get(url, headers=_headers())
-    _raise_with_body(response)
-    return response.json()
+    return await _request_json("GET", url)
 
 
-async def _post_json(url: str, payload: dict) -> dict:
-    response = await _client().post(url, headers=_headers(), json=payload)
-    _raise_with_body(response)
-    return response.json()
+async def _post_json(url: str, payload: dict, *, idempotent: bool = False) -> dict:
+    # POST defaults to non-idempotent (create endpoints); the query endpoint
+    # opts back in explicitly.
+    return await _request_json("POST", url, payload, idempotent=idempotent)
 
 
-async def _patch_json(url: str, payload: dict) -> dict:
-    response = await _client().patch(url, headers=_headers(), json=payload)
-    _raise_with_body(response)
-    return response.json()
+async def _patch_json(url: str, payload: dict, *, idempotent: bool = True) -> dict:
+    # Property/parent PATCHes are safe to replay; append-children PATCHes
+    # are not and pass idempotent=False.
+    return await _request_json("PATCH", url, payload, idempotent=idempotent)
 
 
 async def _delete_json(url: str) -> dict:
-    response = await _client().delete(url, headers=_headers())
-    _raise_with_body(response)
-    return response.json()
+    return await _request_json("DELETE", url)
 
 
 async def get_page_contents(notion_page_id=None, use_default=True) -> NotionPageModel:
@@ -159,8 +213,8 @@ async def get_page_contents(notion_page_id=None, use_default=True) -> NotionPage
         notion_repository.save_notion_error_log(id_not_specified)
         raise id_not_specified
 
-    url_main = NOTION_PAGE_API + page_id
-    url_page = NOTION_PAGE_CONTENT_API.replace("_NOTION_PAGE_ID_", page_id)
+    url_main = f"{NOTION_API_BASE}/pages/{page_id}"
+    url_page = f"{NOTION_API_BASE}/blocks/{page_id}/children"
 
     request_page = await _get_json(url_main)
     request_content_json = await _get_json(url_page)
@@ -192,52 +246,26 @@ def get_notion_page_content_fully(notion_page: NotionPageModel):
 
     for content in content_list:
         if isinstance(content, NotionChildPage):
-            full_text += f"📃<b>{content.title}</b>\n"
+            full_text += f"📃<b>{html_lib.escape(content.title, quote=False)}</b>\n"
         elif isinstance(content, NotionParagraphs):
             for text in content.texts:
+                # Notion text is arbitrary — escape it or a literal '<'/'&'
+                # in a page makes Telegram reject the whole message.
+                plain = html_lib.escape(text.plain_text, quote=False)
                 annotation = text.annotation
                 if annotation.bold:
-                    full_text += f"<b>{text.plain_text}</b>"
+                    full_text += f"<b>{plain}</b>"
                 elif annotation.italic:
-                    full_text += f"<i>{text.plain_text}</i>"
+                    full_text += f"<i>{plain}</i>"
                 elif annotation.underline:
-                    full_text += f"<u>{text.plain_text}</u>"
+                    full_text += f"<u>{plain}</u>"
                 elif annotation.strike:
-                    full_text += f"<s>{text.plain_text}</s>"
+                    full_text += f"<s>{plain}</s>"
                 else:
-                    full_text += f"{text.plain_text}"
+                    full_text += plain
             full_text += "\n"
 
     return full_text
-
-
-async def create_page(parent_page_id: str, title: str, body: str) -> str:
-    """Create a Notion page under `parent_page_id` with the given title and body. Returns the new page id."""
-    blocks = _text_to_paragraph_blocks(body)
-    payload = {
-        "parent": {"type": "page_id", "page_id": parent_page_id},
-        "properties": {
-            "title": {
-                "title": [{"type": "text", "text": {"content": title[:NOTION_RICH_TEXT_LIMIT]}}]
-            }
-        },
-        "children": blocks[:NOTION_BLOCKS_PER_REQUEST],
-    }
-    response = await _post_json(f"{NOTION_API_BASE}/pages", payload)
-    page_id = response["id"]
-
-    remaining = blocks[NOTION_BLOCKS_PER_REQUEST:]
-    while remaining:
-        batch = remaining[:NOTION_BLOCKS_PER_REQUEST]
-        remaining = remaining[NOTION_BLOCKS_PER_REQUEST:]
-        await _patch_json(f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch})
-
-    return page_id
-
-
-async def move_page(page_id: str, new_parent_page_id: str) -> None:
-    payload = {"parent": {"type": "page_id", "page_id": new_parent_page_id}}
-    await _patch_json(f"{NOTION_API_BASE}/pages/{page_id}", payload)
 
 
 async def move_page_to_database(page_id: str, target_database_id: str) -> None:
@@ -265,7 +293,159 @@ async def append_page_blocks(page_id: str, body: str) -> None:
     while blocks:
         batch = blocks[:NOTION_BLOCKS_PER_REQUEST]
         blocks = blocks[NOTION_BLOCKS_PER_REQUEST:]
-        await _patch_json(f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch})
+        await _patch_json(
+            f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch},
+            idempotent=False,
+        )
+
+
+# Block types we can round-trip through "read children -> append children".
+# Anything else is degraded to a plain paragraph of its text (never dropped
+# silently when it has text).
+_TRANSFERABLE_BLOCK_TYPES = {
+    "paragraph", "heading_1", "heading_2", "heading_3",
+    "bulleted_list_item", "numbered_list_item", "quote",
+    "to_do", "toggle", "callout", "code", "divider",
+}
+# Container types whose nested children we also carry over (Notion accepts up
+# to two levels of nesting in an append payload).
+_NESTABLE_BLOCK_TYPES = {
+    "paragraph", "bulleted_list_item", "numbered_list_item",
+    "quote", "to_do", "toggle", "callout",
+}
+
+
+def _sanitize_rich_text(items: Optional[list]) -> list:
+    """Rebuild API-returned rich_text into a payload Notion accepts on write.
+
+    Read responses carry read-only fields (plain_text, href, ids); echoing
+    them back is rejected. Mentions/equations are degraded to their plain
+    text so no content is lost."""
+    out = []
+    for item in items or []:
+        plain = item.get("plain_text", "")
+        if item.get("type") == "text":
+            text_obj = {"content": (item.get("text") or {}).get("content", plain)}
+            link = (item.get("text") or {}).get("link") or {}
+            if link.get("url"):
+                text_obj["link"] = {"url": link["url"]}
+        else:
+            if not plain:
+                continue
+            text_obj = {"content": plain}
+            if item.get("href"):
+                text_obj["link"] = {"url": item["href"]}
+        segment = {"type": "text", "text": text_obj}
+        annotations = {
+            k: v for k, v in (item.get("annotations") or {}).items()
+            if v is True and k != "color"
+        }
+        if annotations:
+            segment["annotations"] = annotations
+        out.append(segment)
+    return out
+
+
+async def fetch_page_block_payloads(page_id: str, _depth: int = 0) -> tuple:
+    """Read a page's blocks and return (write-ready copies, complete).
+
+    Used by the post-merge flow to transfer the REAL content of the page
+    being merged away, instead of re-serialising the (possibly truncated)
+    local text copy — which used to lose everything past the local cap.
+
+    `complete` is False when any CONTENT could not be carried over: a
+    text-free block we can't rebuild (image, file, table, embed, ...), or
+    children nested/numbered beyond what an append payload accepts. Callers
+    must not archive the source page unless `complete` is True — otherwise
+    the untransferred content would land in Notion's trash with no copy
+    anywhere. Text-bearing unsupported blocks degraded to plain paragraphs
+    do NOT clear the flag: their text survives, only the block type changes."""
+    blocks: list = []
+    complete = True
+    cursor = None
+    while True:
+        url = f"{NOTION_API_BASE}/blocks/{page_id}/children?page_size=100"
+        if cursor:
+            url = f"{url}&start_cursor={cursor}"
+        data = await _get_json(url)
+        for raw in data.get("results", []):
+            block_type = raw.get("type")
+            payload = raw.get(block_type) or {}
+            if block_type not in _TRANSFERABLE_BLOCK_TYPES:
+                rich = _sanitize_rich_text(payload.get("rich_text"))
+                if rich:
+                    blocks.append({
+                        "object": "block", "type": "paragraph",
+                        "paragraph": {"rich_text": rich},
+                    })
+                else:
+                    # No text to salvage (image, file, table, embed, child
+                    # page, ...): the copy would lose this block entirely.
+                    complete = False
+                if raw.get("has_children"):
+                    complete = False
+                continue
+            clean: dict = {}
+            if block_type != "divider":
+                clean["rich_text"] = _sanitize_rich_text(payload.get("rich_text"))
+                if block_type == "to_do":
+                    clean["checked"] = bool(payload.get("checked"))
+                if block_type == "code":
+                    clean["language"] = payload.get("language") or "plain text"
+            if raw.get("has_children"):
+                if block_type in _NESTABLE_BLOCK_TYPES and _depth < 1:
+                    children, child_complete = await fetch_page_block_payloads(raw["id"], _depth + 1)
+                    if not child_complete:
+                        complete = False
+                    if len(children) > NOTION_BLOCKS_PER_REQUEST:
+                        children = children[:NOTION_BLOCKS_PER_REQUEST]
+                        complete = False
+                    if children:
+                        clean["children"] = children
+                else:
+                    # Children under a code/divider block, or nested deeper
+                    # than an append payload allows — they would be lost.
+                    complete = False
+            blocks.append({"object": "block", "type": block_type, block_type: clean})
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return blocks, complete
+
+
+def _block_element_count(block: dict) -> int:
+    payload = block.get(block.get("type")) or {}
+    return 1 + len(payload.get("children") or [])
+
+
+async def append_block_payloads(page_id: str, blocks: list) -> None:
+    """Append pre-built block payloads to a page, batching per API limits.
+
+    Batches count NESTED children too — the API caps a request at 100
+    top-level blocks but also ~1000 total block elements, and transferred
+    blocks may each carry up to 100 children."""
+    _MAX_ELEMENTS_PER_REQUEST = 900
+    batch: list = []
+    elements = 0
+    for block in blocks:
+        size = _block_element_count(block)
+        if batch and (
+            len(batch) >= NOTION_BLOCKS_PER_REQUEST
+            or elements + size > _MAX_ELEMENTS_PER_REQUEST
+        ):
+            await _patch_json(
+                f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch},
+                idempotent=False,
+            )
+            batch = []
+            elements = 0
+        batch.append(block)
+        elements += size
+    if batch:
+        await _patch_json(
+            f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch},
+            idempotent=False,
+        )
 
 
 def page_url(page_id: Optional[str]) -> Optional[str]:
@@ -281,7 +461,7 @@ async def find_database_in_page(parent_page_id: str, name: str) -> Optional[str]
     needle = name.strip().lower()
     cursor = None
     while True:
-        url = NOTION_PAGE_CONTENT_API.replace("_NOTION_PAGE_ID_", parent_page_id)
+        url = f"{NOTION_API_BASE}/blocks/{parent_page_id}/children"
         if cursor:
             url = f"{url}?start_cursor={cursor}"
         data = await _get_json(url)
@@ -363,7 +543,9 @@ async def query_database(
             payload["sorts"] = sorts
         if cursor is not None:
             payload["start_cursor"] = cursor
-        data = await _post_json(f"{NOTION_API_BASE}/databases/{database_id}/query", payload)
+        data = await _post_json(
+            f"{NOTION_API_BASE}/databases/{database_id}/query", payload, idempotent=True,
+        )
         out.extend(data.get("results", []))
         if not data.get("has_more"):
             break
@@ -391,7 +573,10 @@ async def create_database_row(
     while remaining:
         batch = remaining[:NOTION_BLOCKS_PER_REQUEST]
         remaining = remaining[NOTION_BLOCKS_PER_REQUEST:]
-        await _patch_json(f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch})
+        await _patch_json(
+            f"{NOTION_API_BASE}/blocks/{page_id}/children", {"children": batch},
+            idempotent=False,
+        )
 
     return page_id
 
@@ -498,7 +683,7 @@ async def fetch_page_plain_text(page_id: str, max_chars: int = 4000) -> str:
     cursor = None
     total = 0
     while True:
-        url = NOTION_PAGE_CONTENT_API.replace("_NOTION_PAGE_ID_", page_id)
+        url = f"{NOTION_API_BASE}/blocks/{page_id}/children"
         if cursor:
             url = f"{url}?start_cursor={cursor}"
         data = await _get_json(url)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from typing import List, Optional
 from enum import Enum
@@ -7,20 +7,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _utcnow_naive() -> datetime:
+    # Naive UTC, matching every other datetime stored in the DB.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class NotionLogs(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     function_name: str = Field(default=None, nullable=False)
     error: str = Field(default=None, nullable=False)
-    occurred_at: datetime = Field(default_factory=datetime.now, nullable=False)
-
-class NotionPageCreator:
-    # wrap following field to "parent" json object
-    page_id: str = ""
-    # wrap following field to "properties" and "title" list item
-    type: str = "text"
-    # wrap following field to "text" json object
-    title: str
-    content: str
+    occurred_at: datetime = Field(default_factory=_utcnow_naive, nullable=False)
 
 class NotionTypes(Enum):
     TITLE = 1
@@ -31,11 +28,6 @@ class NotionTypes(Enum):
 class NotionObjects(Enum):
     PAGE = 1
     BLOCK = 2
-
-
-class FavouritePage(SQLModel, table=True):
-    id: str | None = Field(default=None, primary_key=True)
-    title: str | None = Field(default=None)
 
 
 class NotionAnnotations:

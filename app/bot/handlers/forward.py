@@ -1,4 +1,5 @@
 import os
+from datetime import timezone
 from typing import Optional
 
 from aiogram import Bot
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 from bot import keyboards
 from bot.model.bot_models import PostDestination, UserPosts
 from bot.services import channel_service, notion_save_service, user_service
+from bot.text_utils import esc
 from container import services
 
 load_dotenv()
@@ -44,7 +46,11 @@ async def forward_message(message: Message, bot: Bot) -> None:
     # Original publish time of the forwarded post; present on every MessageOrigin
     # variant. We pass it through to UserPosts.original_post_date so Notion can
     # sort posts by when they were actually published, not when forwarded.
+    # Normalized to NAIVE UTC — the DB stores every datetime that way so SQLite's
+    # string ordering stays consistent (aware "+00:00" values sort differently).
     original_post_date = getattr(forward_origin, "date", None)
+    if original_post_date is not None and original_post_date.tzinfo is not None:
+        original_post_date = original_post_date.astimezone(timezone.utc).replace(tzinfo=None)
 
     channel = channel_service.find_or_create_channel(
         name=name or "Unknown",
@@ -60,7 +66,7 @@ async def forward_message(message: Message, bot: Bot) -> None:
         else:
             gpt_title = await services.gpt_client.get_post_overview(text)
     except Exception as exc:  # noqa: BLE001 — surface the failure to the chat instead of crashing the handler
-        await bot.send_message(chat_id, f"Title generation failed ({ai_choice}): {exc}")
+        await bot.send_message(chat_id, f"Title generation failed ({ai_choice}): {esc(exc)}")
 
     user_post = UserPosts(
         post=text,
@@ -79,7 +85,7 @@ async def forward_message(message: Message, bot: Bot) -> None:
     user_post = user_service.save_or_update_post(user_post)
 
     display_id = channel_service.visible_id(channel)
-    header = f"<b>{channel.name}</b> ({display_id})\n"
+    header = f"<b>{esc(channel.name)}</b> ({esc(display_id)})\n"
 
     if user.auto_save:
         title = claude_title or gpt_title
@@ -95,20 +101,20 @@ async def forward_message(message: Message, bot: Bot) -> None:
         try:
             page_id = await notion_save_service.save_post(user_post, title)
         except Exception as exc:  # noqa: BLE001
-            await bot.send_message(chat_id, header + f"Auto-save to Notion failed: {exc}")
+            await bot.send_message(chat_id, header + f"Auto-save to Notion failed: {esc(exc)}")
             return
         user_post.saved_notion_page_id = page_id
         user_service.save_or_update_post(user_post)
         await bot.send_message(
             chat_id=chat_id,
-            text=header + f"✅ Auto-saved with title: <b>{title}</b>",
+            text=header + f"✅ Auto-saved with title: <b>{esc(title)}</b>",
             reply_to_message_id=message.message_id,
         )
         return
 
     msg = header
-    msg += f"GPT generated title: <b>{gpt_title}</b>\n" if gpt_title else "GPT generated title: <i>NO TITLE GENERATED</i>\n"
-    msg += f"CLAUDE generated title: <b>{claude_title}</b>\n" if claude_title else "CLAUDE generated title: <i>NO TITLE GENERATED</i>\n"
+    msg += f"GPT generated title: <b>{esc(gpt_title)}</b>\n" if gpt_title else "GPT generated title: <i>NO TITLE GENERATED</i>\n"
+    msg += f"CLAUDE generated title: <b>{esc(claude_title)}</b>\n" if claude_title else "CLAUDE generated title: <i>NO TITLE GENERATED</i>\n"
     msg += "Will save to: <i>Channels 📺</i>"
 
     await bot.send_message(
