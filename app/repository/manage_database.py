@@ -93,6 +93,23 @@ class DatabaseManager:
                         'ALTER TABLE "user" ADD COLUMN posts_sort_order VARCHAR '
                         "NOT NULL DEFAULT 'desc'"
                     ))
+            if "random_feed_count" not in existing:
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        'ALTER TABLE "user" ADD COLUMN random_feed_count INTEGER '
+                        'NOT NULL DEFAULT 5'
+                    ))
+            if "random_feed_date" not in existing:
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        'ALTER TABLE "user" ADD COLUMN random_feed_date VARCHAR'
+                    ))
+            if "random_feed_sent" not in existing:
+                with self._engine.begin() as conn:
+                    conn.execute(text(
+                        'ALTER TABLE "user" ADD COLUMN random_feed_sent INTEGER '
+                        'NOT NULL DEFAULT 0'
+                    ))
             username = next((c for c in columns if c["name"] == "username"), None)
             if username is not None and not username.get("nullable", True):
                 self._rebuild_user_table_nullable_username()
@@ -389,6 +406,25 @@ class DatabaseManager:
             for row in rows:
                 session.delete(row)
             session.commit()
+
+    # RANDOM PICKING
+
+    def list_post_ids_grouped_by_channel(self) -> dict:
+        """Return {channel_id: [post_id, ...]} across every post, in ONE query.
+
+        `channel_id` is None for poems / user quotes, which therefore form a
+        single extra bucket. Only ids are read (never bodies), so this stays
+        cheap enough to run per button press for a personal-scale archive.
+        """
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(UserPosts.channel_id, UserPosts.id)
+            ).all()
+        buckets: dict = {}
+        for channel_id, post_id in rows:
+            key = int(channel_id) if channel_id is not None else None
+            buckets.setdefault(key, []).append(int(post_id))
+        return buckets
 
     # TAGS
 

@@ -14,8 +14,10 @@ from dotenv import load_dotenv
 
 from notion import notion_service as notion_api
 
-from .handlers import callback_query, channels, favorites, forward, settings, start, tags
-from .services import notion_service, sync_service
+from .handlers import (
+    callback_query, channels, favorites, forward, random_post, settings, start, tags,
+)
+from .services import notion_service, random_feed_service, sync_service
 
 _log = logging.getLogger(__name__)
 
@@ -82,6 +84,11 @@ async def favorites_button(message: Message) -> None:
 @dp.message(F.text == "Tags 🏷")
 async def tags_button(message: Message) -> None:
     await tags.open_tags(message, handler_bot)
+
+
+@dp.message(F.text == "Random 🎲")
+async def random_button(message: Message) -> None:
+    await random_post.open_random(message, handler_bot)
 
 
 @dp.edited_message()
@@ -329,6 +336,13 @@ async def tag_posts_cbq(query: CallbackQuery) -> None:
     await tags.show_tag_posts(query, handler_bot)
 
 
+# ----- Random -----
+
+@dp.callback_query(F.data == "RANDOM_POST")
+async def random_post_cbq(query: CallbackQuery) -> None:
+    await random_post.reroll(query, handler_bot)
+
+
 # ---------------------------------------------------------------------------
 # Startup work shared by both run modes
 # ---------------------------------------------------------------------------
@@ -351,9 +365,21 @@ async def _health(_request: web.Request) -> web.Response:
 # Run modes — chosen by RUN_MODE (polling = local dev, webhook = production).
 # ---------------------------------------------------------------------------
 
+# asyncio only holds a WEAK reference to a running task, so a bare
+# create_task() can be garbage-collected mid-flight. Keep strong refs here.
+_background_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def run_polling() -> None:
     await _bootstrap()
-    asyncio.create_task(sync_service.auto_sync_loop())
+    _spawn(sync_service.auto_sync_loop())
+    _spawn(random_feed_service.random_feed_loop(handler_bot))
     # Drop any webhook a previous production deploy registered, otherwise
     # Telegram keeps delivering by webhook and long polling errors with 409.
     await handler_bot.delete_webhook(drop_pending_updates=False)
@@ -384,6 +410,9 @@ def run_webhook() -> None:
     async def on_startup(app: web.Application) -> None:
         await _bootstrap()
         app["sync_task"] = asyncio.create_task(sync_service.auto_sync_loop())
+        app["random_feed_task"] = asyncio.create_task(
+            random_feed_service.random_feed_loop(handler_bot)
+        )
         await handler_bot.set_webhook(
             webhook_url,
             secret_token=secret,
@@ -392,9 +421,10 @@ def run_webhook() -> None:
         _log.info("Webhook set to %s", webhook_url)
 
     async def on_shutdown(app: web.Application) -> None:
-        task = app.get("sync_task")
-        if task is not None:
-            task.cancel()
+        for key in ("sync_task", "random_feed_task"):
+            task = app.get(key)
+            if task is not None:
+                task.cancel()
         await handler_bot.delete_webhook()
         await handler_bot.session.close()
         await notion_api.close_http_client()

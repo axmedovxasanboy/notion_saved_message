@@ -75,6 +75,12 @@ def set_auto_sync_interval(user: User, minutes: int) -> User:
     return bot_repository.update_user(user)
 
 
+def set_random_feed_count(user: User, count: int) -> User:
+    """0 disables the daily random feed; anything higher is posts-per-day."""
+    user.random_feed_count = max(0, int(count))
+    return bot_repository.update_user(user)
+
+
 def set_posts_sort_order(user: User, order: str) -> User:
     if order not in ("desc", "asc"):
         raise ValueError(f"Unsupported sort order: {order}")

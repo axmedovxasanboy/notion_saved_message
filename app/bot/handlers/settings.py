@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot import keyboards
 from bot.model.bot_models import BotSteps, User
-from bot.services import user_service
+from bot.services import random_feed_service, user_service
 
 ADMIN_CHAT_ID = os.getenv("CHAT_ID")
 
@@ -47,6 +47,12 @@ async def handle_callback(query: CallbackQuery, bot: Bot) -> None:
         current = user.posts_sort_order or "desc"
         new_order = "asc" if current == "desc" else "desc"
         user = user_service.set_posts_sort_order(user, new_order)
+    elif data.startswith("SET_RANDOM_"):
+        count = _parse_int(data, "SET_RANDOM_")
+        if count is None:
+            await bot.answer_callback_query(query.id)
+            return
+        user = user_service.set_random_feed_count(user, count)
     elif data.startswith("SET_SYNC_"):
         minutes = _parse_int(data, "SET_SYNC_")
         if minutes is None:
@@ -84,12 +90,23 @@ def _format(user: User) -> str:
         if (user.posts_sort_order or "desc") == "desc"
         else "Oldest first (by post date)"
     )
+    feed = user.random_feed_count or 0
+    if feed <= 0:
+        feed_label = "Off"
+    else:
+        feed_label = (
+            f"{feed} per day, "
+            f"{random_feed_service.WINDOW_START.strftime('%H:%M')}–"
+            f"{random_feed_service.WINDOW_END.strftime('%H:%M')} "
+            f"({random_feed_service.feed_timezone().key})"
+        )
     return (
         "<b>⚙️ Settings</b>\n\n"
         f"🤖 Auto-title AI: <b>{ai_label}</b>\n"
         f"💾 Auto-save forwards: <b>{save_label}</b>\n"
         f"🗓 Posts order: <b>{sort_label}</b>\n"
-        f"⏰ Auto-sync from Notion: <b>{sync_label}</b>"
+        f"⏰ Auto-sync from Notion: <b>{sync_label}</b>\n"
+        f"🎲 Daily random posts: <b>{feed_label}</b>"
     )
 
 

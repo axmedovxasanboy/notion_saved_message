@@ -90,6 +90,13 @@ class User(SQLModel, table=True):
     # "desc" (newest first) or "asc" (oldest first) — sort applied to the per-channel
     # posts list, keyed on UserPosts.original_post_date.
     posts_sort_order: str = Field(default="desc", nullable=False)
+    # How many random posts to push per day; 0 disables the daily feed.
+    random_feed_count: int = Field(default=5, nullable=False)
+    # ISO date (in RANDOM_FEED_TZ, not UTC) of the day `random_feed_sent`
+    # refers to. Together they survive restarts without re-sending or
+    # double-sending a slot.
+    random_feed_date: Optional[str] = Field(default=None)
+    random_feed_sent: int = Field(default=0, nullable=False)
 
     posts: List["UserPosts"] = Relationship(back_populates="user")
 

@@ -20,8 +20,11 @@ def get_admin_keyboards() -> ReplyKeyboardMarkup:
     builder.button(text="Tags 🏷")
     builder.button(text="Settings ⚙️")
     builder.button(text="Sync 🔄")
+    builder.button(text="Random 🎲")
 
-    builder.adjust(3, 3)
+    # Random gets its own full-width bottom row — it's the one button meant to
+    # be tapped repeatedly.
+    builder.adjust(3, 3, 1)
 
     return builder.as_markup(resize_keyboard=True)
 
@@ -203,24 +206,48 @@ def get_channel_posts_keyboard(
 
 def get_post_detail_keyboard(
     post: UserPosts, is_favorite: bool = False, from_post_page: int = 0,
+    include_random: bool = False,
 ) -> InlineKeyboardMarkup:
+    """The full action set for one post. `include_random` appends a reroll
+    button, used when the post was reached from the Random screen.
+
+    Row widths are accumulated alongside the buttons rather than hardcoded,
+    so an optional button can't silently shift the layout of the ones after it.
+    """
     builder = InlineKeyboardBuilder()
+    rows: list[int] = []
+
     fav_label = "⭐ Unfavorite" if is_favorite else "☆ Favorite"
     builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_POST_{post.id}")
+    rows.append(1)
+
     builder.button(text="✏️ Edit title", callback_data=f"POST_TITLE_{post.id}")
     builder.button(text="🏷 Tags", callback_data=f"POST_TAGS_{post.id}")
+    rows.append(2)
+
     builder.button(text="🔀 Move to…", callback_data=f"POST_MOVE_{post.id}")
     if post.channel_id is not None:
+        # Merging only makes sense between two posts of the same channel.
         builder.button(text="🔗 Merge with…", callback_data=f"POST_MERGE_{post.id}")
+        rows.append(2)
+    else:
+        rows.append(1)
+
     builder.button(text="🗑 Delete", callback_data=f"POST_DELETE_{post.id}")
+    rows.append(1)
+
     if post.channel_id is not None:
         builder.button(
             text="⬅️ Back",
             callback_data=f"CH_POSTS_{post.channel_id}_P{from_post_page}",
         )
-        builder.adjust(1, 2, 2, 1, 1)
-    else:
-        builder.adjust(1, 2, 1, 1)
+        rows.append(1)
+
+    if include_random:
+        builder.button(text="🎲 Another random", callback_data="RANDOM_POST")
+        rows.append(1)
+
+    builder.adjust(*rows)
     return builder.as_markup()
 
 
@@ -306,6 +333,7 @@ def get_post_delete_confirm_keyboard(post: UserPosts) -> InlineKeyboardMarkup:
 
 
 SYNC_INTERVAL_PRESETS = [(0, "Off"), (30, "30m"), (60, "1h"), (360, "6h"), (720, "12h"), (1440, "24h")]
+RANDOM_FEED_PRESETS = [(0, "Off"), (3, "3/day"), (5, "5/day"), (8, "8/day")]
 
 
 def get_settings_keyboard(user: User) -> InlineKeyboardMarkup:
@@ -329,7 +357,11 @@ def get_settings_keyboard(user: User) -> InlineKeyboardMarkup:
         marker = " ✓" if user.auto_sync_interval_minutes == minutes else ""
         builder.button(text=f"{label}{marker}", callback_data=f"SET_SYNC_{minutes}")
 
-    builder.adjust(2, 1, 1, 3, 3)
+    for count, label in RANDOM_FEED_PRESETS:
+        marker = " ✓" if (user.random_feed_count or 0) == count else ""
+        builder.button(text=f"🎲 {label}{marker}", callback_data=f"SET_RANDOM_{count}")
+
+    builder.adjust(2, 1, 1, 3, 3, 4)
     return builder.as_markup()
 
 
