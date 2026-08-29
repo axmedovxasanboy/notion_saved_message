@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from bot.model.bot_models import Channel, UserPosts
-from bot.services import favorites_service
+from bot.services import favorites_service, tags_service
 from container import services
 from notion import notion_service
 
@@ -172,6 +172,7 @@ async def delete_channel(channel: Channel) -> None:
         await notion_service.archive_page(channel.notion_page_id)
     for post in services.db.list_posts_for_channel(channel.id):
         favorites_service.remove_post_favorites(post.id)
+        tags_service.remove_post_tags(post.id)
         services.db.delete_post(post)
     favorites_service.remove_channel_favorites(channel.id)
     services.db.delete_channel(channel)
@@ -203,6 +204,7 @@ async def delete_post(post: UserPosts) -> None:
     if post.saved_notion_page_id:
         await notion_service.archive_page(post.saved_notion_page_id)
     favorites_service.remove_post_favorites(post.id)
+    tags_service.remove_post_tags(post.id)
     services.db.delete_post(post)
 
 
@@ -285,6 +287,10 @@ async def merge_posts(
         if kept_body:
             await notion_service.append_page_blocks(kept.saved_notion_page_id, kept_body)
 
+    # Tags are local-only, so nothing above touched them: carry the absorbed
+    # post's tags onto the kept post before its rows disappear.
+    tags_service.add_tags(kept.id, tags_service.get_tags(target.id))
+    tags_service.remove_post_tags(target.id)
     favorites_service.remove_post_favorites(target.id)
     services.db.delete_post(target)
     return services.db.save_or_update_post(kept)

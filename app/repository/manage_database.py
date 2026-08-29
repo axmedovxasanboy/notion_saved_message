@@ -2,7 +2,9 @@ import logging
 from pathlib import Path
 from sqlalchemy import Engine
 
-from bot.model.bot_models import Channel, Favorite, FavoriteType, PostDestination, User, UserPosts
+from bot.model.bot_models import (
+    Channel, Favorite, FavoriteType, PostDestination, PostTag, User, UserPosts,
+)
 # Imported for its side effect: registers the NotionLogs table on SQLModel's
 # metadata so create_all() below creates it.
 from notion.model.notion import NotionLogs  # noqa: F401
@@ -383,6 +385,100 @@ class DatabaseManager:
                     Favorite.target_type == FavoriteType.POST,
                     Favorite.target_id == post_id,
                 )
+            ).all()
+            for row in rows:
+                session.delete(row)
+            session.commit()
+
+    # TAGS
+
+    def get_tags_for_post(self, post_id: int) -> list[str]:
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(PostTag.tag)
+                .where(PostTag.post_id == post_id)
+                .order_by(PostTag.tag)
+            ).all()
+            return [r if isinstance(r, str) else r[0] for r in rows]
+
+    def get_tags_for_posts(self, post_ids: list[int]) -> dict[int, list[str]]:
+        """Return {post_id: [tag, ...]} for the given ids in ONE query.
+        Ids with no tags are filled with an empty list so callers don't
+        need to check membership."""
+        if not post_ids:
+            return {}
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(PostTag.post_id, PostTag.tag)
+                .where(PostTag.post_id.in_(post_ids))
+                .order_by(PostTag.post_id, PostTag.tag)
+            ).all()
+        out: dict[int, list[str]] = {pid: [] for pid in post_ids}
+        for post_id, tag in rows:
+            out.setdefault(int(post_id), []).append(tag)
+        return out
+
+    def set_tags_for_post(self, post_id: int, tags: list[str]) -> list[str]:
+        """Replace a post's tag set wholesale. Returns the stored tags, sorted.
+
+        Diffs against the existing rows instead of delete-all-then-insert so
+        `created_at` survives on tags that were already there."""
+        desired = sorted(set(tags))
+        with Session(self._engine) as session:
+            existing_rows = list(session.exec(
+                select(PostTag).where(PostTag.post_id == post_id)
+            ).all())
+            existing = {row.tag: row for row in existing_rows}
+
+            for tag, row in existing.items():
+                if tag not in desired:
+                    session.delete(row)
+            for tag in desired:
+                if tag not in existing:
+                    session.add(PostTag(post_id=post_id, tag=tag))
+            session.commit()
+        return desired
+
+    def list_tags_with_counts(self) -> list[tuple[str, int]]:
+        """Every tag in use, with how many posts carry it.
+        Ordered by count (desc) then name (asc) so the busiest tags lead."""
+        from sqlalchemy import func
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(PostTag.tag, func.count(PostTag.post_id))
+                .group_by(PostTag.tag)
+                .order_by(func.count(PostTag.post_id).desc(), PostTag.tag.asc())
+            ).all()
+        return [(tag, int(count)) for tag, count in rows]
+
+    def list_posts_for_tag(self, tag: str, sort_order: str = "desc") -> list:
+        # Same ordering contract as list_posts_for_channel: by original post
+        # date, undated rows last in both directions, `id` as the tiebreaker.
+        with Session(self._engine) as session:
+            stmt = (
+                select(UserPosts)
+                .join(PostTag, PostTag.post_id == UserPosts.id)
+                .where(PostTag.tag == tag)
+            )
+            if sort_order == "asc":
+                stmt = stmt.order_by(
+                    UserPosts.original_post_date.is_(None),
+                    UserPosts.original_post_date.asc(),
+                    UserPosts.id.asc(),
+                )
+            else:
+                stmt = stmt.order_by(
+                    UserPosts.original_post_date.is_(None),
+                    UserPosts.original_post_date.desc(),
+                    UserPosts.id.desc(),
+                )
+            return list(session.exec(stmt).all())
+
+    def cleanup_post_tags(self, post_id: int) -> None:
+        """Drop every tag row pointing at a post that no longer exists."""
+        with Session(self._engine) as session:
+            rows = session.exec(
+                select(PostTag).where(PostTag.post_id == post_id)
             ).all()
             for row in rows:
                 session.delete(row)

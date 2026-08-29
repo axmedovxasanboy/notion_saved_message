@@ -6,6 +6,7 @@ from aiogram import Bot
 from aiogram.types import CallbackQuery, Message
 
 from bot import keyboards
+from bot.handlers import tags
 from bot.model.bot_models import BotSteps, Channel
 from bot.services import bot_message_service, channel_service, favorites_service, user_service
 from bot.text_utils import esc
@@ -645,6 +646,14 @@ async def handle_text_input(message: Message, bot: Bot) -> bool:
         )
         return True
 
+    if action == "edit_post_tags":
+        post = services.db.get_post_by_id(int(target)) if target else None
+        if post is None:
+            await bot.send_message(chat_id, "Post not found.")
+            return True
+        await tags.apply_tags_input(message, bot, post, text)
+        return True
+
     return False
 
 
@@ -660,6 +669,9 @@ async def _request_input(
     if user is None:
         return
     user.awaiting_action = action_template.format(id=target_id)
+    # bot.text_message() runs receive_custom_title() BEFORE handle_text_input(),
+    # so a still-pending title request would swallow this prompt's input. Clear it.
+    user.awaiting_title_for_message_id = None
     user_service.save_or_update_user(user=user)
     await bot.send_message(query.message.chat.id, prompt_text)
     await bot.answer_callback_query(query.id)

@@ -58,6 +58,9 @@ async def request_custom_title(callback_query: CallbackQuery, bot: Bot) -> None:
     if post is None or user is None:
         await _answer(bot, callback_query, text="Post not found.", alert=True)
         return
+    # Symmetric with channels._request_input: only one "next text message"
+    # prompt can be outstanding at a time.
+    user.awaiting_action = None
     user_service.set_awaiting_title(user, post.message_id)
     await bot.send_message(
         chat_id,

@@ -111,6 +111,26 @@ class Favorite(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow_naive, nullable=False)
 
 
+class PostTag(SQLModel, table=True):
+    """A free-form label attached to a post. Local-only: tags are never written
+    to (or read back from) Notion, so a sync can neither create nor clobber them.
+
+    Stored one row per (post, tag) rather than as a delimited string column so
+    lookups are exact ('fin' never matches 'finance'), counts are a GROUP BY,
+    and a global rename touches rows instead of doing string surgery."""
+
+    __table_args__ = (
+        UniqueConstraint("post_id", "tag", name="uq_post_tag"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    post_id: int = Field(foreign_key="userposts.id", nullable=False, index=True)
+    # Canonical form: lowercase, no leading '#', spaces collapsed to '_'.
+    # See bot.services.tags_service.parse_tags for the normalization rules.
+    tag: str = Field(nullable=False, index=True)
+    created_at: datetime = Field(default_factory=utcnow_naive, nullable=False)
+
+
 class Channel(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(nullable=False)

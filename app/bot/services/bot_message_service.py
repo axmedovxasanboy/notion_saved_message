@@ -18,6 +18,7 @@ from aiogram import Bot
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 
 from bot.model.bot_models import UserPosts
+from bot.services import tags_service
 from bot.text_utils import esc, html_to_plain_text, truncate
 from notion import notion_service
 
@@ -38,6 +39,14 @@ def format_post_detail(
     parts = [f"<b>{esc(title)}</b>{star}"]
     if link:
         parts.append(f'<a href="{link}">Open in Notion</a>')
+
+    # Tags are read here rather than passed in so the four call sites of
+    # render_post_edit() don't each have to fetch them. `post.id` is None only
+    # for a post that was never persisted, which can't reach this screen.
+    if post.id is not None:
+        tags = tags_service.get_tags(post.id)
+        if tags:
+            parts.append(f"🏷 {esc(tags_service.format_tags(tags))}")
 
     body = (post.post or "").strip()
     if not full:

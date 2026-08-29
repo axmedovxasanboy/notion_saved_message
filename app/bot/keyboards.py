@@ -17,10 +17,11 @@ def get_admin_keyboards() -> ReplyKeyboardMarkup:
     builder.button(text=getenv("NOTION_MAIN_WORKSPACE_BUTTON_TEXT", "NONE"))
     builder.button(text="Channels 📺")
     builder.button(text="Favorites ⭐")
+    builder.button(text="Tags 🏷")
     builder.button(text="Settings ⚙️")
     builder.button(text="Sync 🔄")
 
-    builder.adjust(3, 2)
+    builder.adjust(3, 3)
 
     return builder.as_markup(resize_keyboard=True)
 
@@ -61,6 +62,7 @@ def get_forward_message_cbq(forwarded_message_id: str, post: UserPosts) -> Inlin
         builder.button(text="Ask from claude", callback_data=f'ASK_FROM_CLAUDE_{forwarded_message_id}')
 
     builder.button(text="Title by myself", callback_data=f'TITLE_BY_ME_{forwarded_message_id}')
+    builder.button(text="🏷 Tags", callback_data=f'POST_TAGS_{post.id}')
 
     if post.is_title_by_claude:
         builder.button(text="Save with current claude title", callback_data=f'SAVE_WITH_CLAUDE_TITLE_{forwarded_message_id}')
@@ -206,6 +208,7 @@ def get_post_detail_keyboard(
     fav_label = "⭐ Unfavorite" if is_favorite else "☆ Favorite"
     builder.button(text=fav_label, callback_data=f"FAV_TOGGLE_POST_{post.id}")
     builder.button(text="✏️ Edit title", callback_data=f"POST_TITLE_{post.id}")
+    builder.button(text="🏷 Tags", callback_data=f"POST_TAGS_{post.id}")
     builder.button(text="🔀 Move to…", callback_data=f"POST_MOVE_{post.id}")
     if post.channel_id is not None:
         builder.button(text="🔗 Merge with…", callback_data=f"POST_MERGE_{post.id}")
@@ -215,9 +218,9 @@ def get_post_detail_keyboard(
             text="⬅️ Back",
             callback_data=f"CH_POSTS_{post.channel_id}_P{from_post_page}",
         )
-        builder.adjust(1, 2, 1, 1, 1)
+        builder.adjust(1, 2, 2, 1, 1)
     else:
-        builder.adjust(1, 2, 1)
+        builder.adjust(1, 2, 1, 1)
     return builder.as_markup()
 
 
@@ -360,6 +363,88 @@ def get_favorite_posts_keyboard(posts: List[UserPosts]) -> InlineKeyboardMarkup:
         )
     builder.button(text="⬅️ Back", callback_data="FAV_MENU")
     builder.adjust(1, repeat=True)
+    return builder.as_markup()
+
+
+TAGS_PER_PAGE = 8
+
+
+def paginate_tags(tags: List[tuple], page: int) -> tuple[List[tuple], int, int]:
+    """Return (tags_for_this_page, clamped_page, total_pages).
+    `tags` is the [(tag, post_count), ...] list from tags_service.list_tags()."""
+    total = max(1, (len(tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE)
+    page = max(0, min(page, total - 1))
+    start = page * TAGS_PER_PAGE
+    return tags[start:start + TAGS_PER_PAGE], page, total
+
+
+def get_tags_list_keyboard(tags: List[tuple], page: int = 0) -> InlineKeyboardMarkup:
+    """Paginated list of every tag in use, busiest first.
+
+    The tag itself is embedded in the callback data. That is safe because
+    tags_service caps a normalized tag at 40 UTF-8 bytes, leaving the longest
+    payload (`TAG_POSTS_{tag}_P{page}`) well inside Telegram's 64-byte limit.
+    """
+    builder = InlineKeyboardBuilder()
+    page_tags, page, total_pages = paginate_tags(tags, page)
+    for tag, count in page_tags:
+        builder.button(
+            text=f"#{tag} — {count} post(s)",
+            callback_data=f"TAG_POSTS_{tag}",
+        )
+
+    nav: list[tuple[str, str]] = []
+    if page > 0:
+        nav.append(("⬅️ Prev", f"TAG_LIST_PAGE_{page - 1}"))
+    if total_pages > 1:
+        nav.append((f"· {page + 1}/{total_pages} ·", "TAG_LIST_NOOP"))
+    if page < total_pages - 1:
+        nav.append(("Next ➡️", f"TAG_LIST_PAGE_{page + 1}"))
+    for text, data in nav:
+        builder.button(text=text, callback_data=data)
+
+    if nav:
+        builder.adjust(*([1] * len(page_tags)), len(nav))
+    else:
+        builder.adjust(1, repeat=True)
+    return builder.as_markup()
+
+
+def get_tag_posts_keyboard(
+    tag: str, posts: List[UserPosts], page: int = 0,
+) -> InlineKeyboardMarkup:
+    """Paginated posts carrying `tag`. Opening one reuses POST_VIEW_, so its
+    detail screen behaves exactly like it does when reached from Favorites."""
+    builder = InlineKeyboardBuilder()
+    page_posts, page, total_pages = paginate_posts(posts, page)
+    base_index = page * POSTS_PER_PAGE
+    for offset, post in enumerate(page_posts, start=1):
+        date_prefix = (
+            f"{post.original_post_date.strftime('%Y-%m-%d')} · "
+            if post.original_post_date else ""
+        )
+        builder.button(
+            text=f"{base_index + offset}. {date_prefix}{_post_label(post)}",
+            callback_data=f"POST_VIEW_{post.id}",
+        )
+
+    nav: list[tuple[str, str]] = []
+    if page > 0:
+        nav.append(("⬅️ Prev", f"TAG_POSTS_{tag}_P{page - 1}"))
+    if total_pages > 1:
+        nav.append((f"· {page + 1}/{total_pages} ·", "TAG_POSTS_NOOP"))
+    if page < total_pages - 1:
+        nav.append(("Next ➡️", f"TAG_POSTS_{tag}_P{page + 1}"))
+    for text, data in nav:
+        builder.button(text=text, callback_data=data)
+
+    builder.button(text="⬅️ Back to tags", callback_data="TAG_MENU")
+
+    rows: list[int] = [1] * len(page_posts)
+    if nav:
+        rows.append(len(nav))
+    rows.append(1)
+    builder.adjust(*rows)
     return builder.as_markup()
 
 

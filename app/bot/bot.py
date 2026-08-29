@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from notion import notion_service as notion_api
 
-from .handlers import callback_query, channels, favorites, forward, settings, start
+from .handlers import callback_query, channels, favorites, forward, settings, start, tags
 from .services import notion_service, sync_service
 
 _log = logging.getLogger(__name__)
@@ -77,6 +77,11 @@ async def settings_button(message: Message) -> None:
 @dp.message(F.text == "Favorites ⭐")
 async def favorites_button(message: Message) -> None:
     await favorites.open_favorites(message, handler_bot)
+
+
+@dp.message(F.text == "Tags 🏷")
+async def tags_button(message: Message) -> None:
+    await tags.open_tags(message, handler_bot)
 
 
 @dp.edited_message()
@@ -209,6 +214,11 @@ async def post_title_cbq(query: CallbackQuery) -> None:
     await channels.request_post_title(query, handler_bot)
 
 
+@dp.callback_query(F.data.startswith("POST_TAGS_"))
+async def post_tags_cbq(query: CallbackQuery) -> None:
+    await tags.request_post_tags(query, handler_bot)
+
+
 @dp.callback_query(F.data.startswith("POST_MOVE_GO_"))
 async def post_move_go_cbq(query: CallbackQuery) -> None:
     await channels.execute_post_move(query, handler_bot)
@@ -297,6 +307,26 @@ async def favorites_toggle_channel_cbq(query: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("FAV_TOGGLE_POST_"))
 async def favorites_toggle_post_cbq(query: CallbackQuery) -> None:
     await favorites.toggle_post_favorite(query, handler_bot)
+
+
+# ----- Tags callbacks -----
+
+@dp.callback_query(F.data == "TAG_MENU")
+async def tags_menu_cbq(query: CallbackQuery) -> None:
+    await tags.show_tag_list(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("TAG_LIST"))
+async def tags_list_cbq(query: CallbackQuery) -> None:
+    # Matches TAG_LIST_PAGE_<n> (pagination) and TAG_LIST_NOOP (the page
+    # indicator pill — the handler just acks it).
+    await tags.show_tag_list(query, handler_bot)
+
+
+@dp.callback_query(F.data.startswith("TAG_POSTS_"))
+async def tag_posts_cbq(query: CallbackQuery) -> None:
+    # Matches TAG_POSTS_<tag>, TAG_POSTS_<tag>_P<n> and TAG_POSTS_NOOP.
+    await tags.show_tag_posts(query, handler_bot)
 
 
 # ---------------------------------------------------------------------------
